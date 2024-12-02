@@ -37,19 +37,21 @@ def masked_hash_value(value, bitmask=4294967295):
 
 def hash_value(value, nbits=10):
     """
-    Hashes a value and limits it to a specified number of bits.
+    Hashes a value and limits it to a specified number of bits, ensuring it is at least 2.
 
     Args:
         value: The value to hash.
         nbits (int, optional): Number of bits to limit the hash. Defaults to 10.
 
     Returns:
-        int: The hashed value limited to nbits.
+        int: The hashed value limited to nbits, and in the range [2, 2**nbits - 1]
     """
-    # Create a bitmask with nbits set to 1 (e.g., if nbits=10, bitmask=1023)
-    bitmask = pow(2, nbits) - 1
-    # Apply the bitmask to the hashed value
-    return masked_hash_value(value, bitmask)
+    max_index = 2 ** nbits
+    # Compute the masked hash value
+    h = masked_hash_value(value, max_index - 1 - 2)  # Adjust the bitmask to exclude indices 0 and 1
+    # Shift the hash to start from 2
+    h += 2
+    return h
 
 def node_hash(node_idx, graph):
     """
@@ -174,91 +176,105 @@ def node_vectors(original_graph, radius, distance, connector, nbits):
     Returns:
         scipy.sparse.csr_matrix: The sparse matrix of node feature vectors.
     """
-    # Create a copy to avoid modifying the original graph
+    # Create a copy of the original graph to avoid modifying it
     graph = original_graph.copy()
     
     # Step 1: Compute and store node hashes for all nodes in the graph
     for node_idx in graph.nodes():
-        # Compute node hash based on its label and the labels of its neighbors
+        # Compute a unique hash for the node based on its label and the labels of its immediate neighbors
         graph.nodes[node_idx]['node_hash'] = node_hash(node_idx, graph)
     
     # Step 2: Compute and store rooted graph hashes for each node up to the specified radius
-    # The 'cutoff' is the maximum between the specified 'radius' and 'connector' values
+    # The 'cutoff' is the maximum of the 'radius' and 'connector' parameters
     cutoff = max(radius, connector)
     for node_idx in graph.nodes():
-        # Initialize the array to store hashes up to the maximum radius = cutoff
+        # Initialize an array to store rooted graph hashes up to the cutoff radius
         graph.nodes[node_idx]['rooted_graph_hash'] = np.zeros(cutoff, dtype=int)
-        # For each radius from 0 up to cutoff
+        # For each radius from 0 up to (but not including) cutoff
         for r in range(cutoff):
-            # Compute rooted graph hash at radius r
+            # Compute the rooted graph hash for the node at radius 'r'
             label = rooted_graph_hash(node_idx, graph, radius=r)
-            # Store the hash at position r
+            # Store the computed hash in the array at position 'r'
             graph.nodes[node_idx]['rooted_graph_hash'][r] = label
 
     node_vectors = []  # List to store feature vectors for each node
     
-    # Step 3: Iterate over all nodes to generate paired codes based on distances and hashes
+    # Step 3: Iterate over all nodes to generate paired codes based on distances and rooted graph hashes
     for node_idx in graph.nodes():
-        node_codes_list = []  # List to store codes for the current node
-        # For each rooted graph hash code_i of the node
+        node_codes_list = []  # List to store code identifiers for the current node
+        # For each rooted graph hash 'code_i' of the node (up to the cutoff radius)
         for code_i in graph.nodes[node_idx]['rooted_graph_hash']:
-            # Step 3a: Find all nodes within the specified distance from the current node
+            # Step 3a: Find all nodes within the specified 'distance' from the current node
             node_idxs_to_dist_dict = nx.single_source_shortest_path_length(
                 graph, node_idx, cutoff=distance
             )
-            # Invert the dictionary to map distances to node indices
+            # node_idxs_to_dist_dict is a dictionary mapping node indices to their shortest path distance from 'node_idx'
+
+            # Invert the dictionary to map distances to lists of node indices at that distance
             dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
 
-            # Step 3b: Iterate over each connector thickness level
+            # Step 3b: Iterate over each level of connector thickness from 0 up to 'connector'
             for connect in range(connector + 1):
-                # Step 3c: Iterate over each distance and corresponding nodes
+                # Step 3c: Iterate over each distance and corresponding list of nodes at that distance
                 for dist in sorted(dist_to_node_idxs_dict):
-                    node_idxs = dist_to_node_idxs_dict[dist]
+                    node_idxs = dist_to_node_idxs_dict[dist]  # List of node indices at distance 'dist'
                     for curr_node_idx in node_idxs:
                         if connect > 0:
-                            # If connector thickness is greater than 0
-                            # Initialize the set to collect nodes on the union of shortest paths
+                            # If connector thickness is greater than 0, include the union of shortest paths
+                            # Initialize a set to collect nodes on the union of all shortest paths between 'node_idx' and 'curr_node_idx'
                             union_of_shortest_paths = set()
-                            # Compute all shortest paths between node_idx and curr_node_idx
+                            # Compute all shortest paths between 'node_idx' and 'curr_node_idx'
                             shortest_paths = list(nx.all_shortest_paths(graph, source=node_idx, target=curr_node_idx))
                             for path in shortest_paths:
-                                # Add all nodes in the path to the set
+                                # Add all nodes in each path to the union set
                                 union_of_shortest_paths.update(path)
 
-                        # For each rooted graph hash code_j of the current neighbor node
+                        # For each rooted graph hash 'code_j' of the current neighbor node 'curr_node_idx'
                         for code_j in graph.nodes[curr_node_idx]['rooted_graph_hash']:
                             
                             if connect == 0:
-                                # When connector thickness is 0, compute paired_code without union_of_shortest_paths_code
+                                # When connector thickness is 0, compute the paired code without the union of shortest paths
+                                # Paired code includes the rooted graph hash of 'node_idx', the distance, and the rooted graph hash of 'curr_node_idx'
                                 paired_code = hash_list([code_i, dist, code_j])
                             else:
-                                # When connector thickness is greater than 0, compute union_of_shortest_paths_code
-                                # For each node in the union of shortest paths, extract its rooted_graph_hash at level (connect - 1)
+                                # When connector thickness is greater than 0, include the union of shortest paths in the code
+                                # For each node in the union of shortest paths, extract its rooted graph hash at level (connect - 1)
                                 union_of_shortest_paths_node_hashes = [
-                                    # Create a hash of (distance, rooted_graph_hash)
+                                    # Create a hash of (distance to the node, rooted graph hash at level 'connect - 1')
                                     hash_list([node_idxs_to_dist_dict[node], graph.nodes[node]['rooted_graph_hash'][connect - 1]])
                                     for node in union_of_shortest_paths
                                 ]
 
-                                # Sort the list to ensure consistent ordering
+                                # Sort the list of hashes to ensure consistent ordering
                                 sorted_list = sorted(union_of_shortest_paths_node_hashes)
-                                # Hash the sorted list to obtain union_of_shortest_paths_code
+                                # Hash the sorted list to obtain a code representing the union of shortest paths
                                 union_of_shortest_paths_code = hash_list(sorted_list)
-                                # Compute paired_code with union_of_shortest_paths_code
+                                # Compute the paired code including the union of shortest paths code
                                 paired_code = hash_list([code_i, dist, code_j, union_of_shortest_paths_code])
 
-                            # Limit the hash to the specified number of bits
+                            # Limit the hash to the specified number of bits to control the feature space size
                             paired_code = hash_value(paired_code, nbits=nbits)
+                            # Append the computed paired code to the list for the current node
                             node_codes_list.append(paired_code)
+
+        # **Add fixed features to the node codes list by appending**
+        # Append '0' once to set node_vector[0,0] = 1 (bias term)
+        node_codes_list.append(0)
+        # Append '1' 'degree' times to set node_vector[0,1] = degree of the node
+        node_codes_list.extend([1] * graph.degree[node_idx])
 
         # Step 4: Convert the list of paired codes into a sparse histogram vector
         node_vector = items_to_sparse_histogram(node_codes_list, nbits)
+        
+        # Append the node vector to the list of node vectors
         node_vectors.append(node_vector)
     
-    # Stack node vectors vertically to create a matrix
+    # Stack all node vectors vertically to create a sparse matrix
     node_vectors_mtx = sp.sparse.vstack(node_vectors)
 
+    # Return the matrix of node feature vectors
     return node_vectors_mtx
+
 
 def graph_vector(original_graph, radius, distance, connector, nbits, attribute_key=None):
     """
