@@ -402,7 +402,7 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
     if parallel:
         # Define a helper function for parallel processing
         def func(graph): 
-            return node_vectors(graph, radius, distance, connector, nbits, attribute_key)
+            return node_vectors(graph, radius, distance, connector, nbits)
         
         # Get the number of available CPUs
         n_cpus = mp.cpu_count()
@@ -415,7 +415,7 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
     else:
         # Encode graphs sequentially
         graph_node_vectors = [
-            node_vectors(graph, radius, distance, connector, nbits, attribute_key)
+            node_vectors(graph, radius, distance, connector, nbits)
             for graph in graphs
         ]
     return graph_node_vectors
