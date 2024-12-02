@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/897433892.svg)](https://doi.org/10.5281/zenodo.14261713)
+
 # NSPPK
 Neighbourhood Subgraph Pairwise Pathway Kernel 
 
