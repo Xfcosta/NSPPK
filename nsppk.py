@@ -8,54 +8,6 @@ import numpy as np                            # For numerical operations
 import scipy as sp                            # For scientific computing
 from sklearn.base import BaseEstimator, TransformerMixin  # Import scikit-learn base classes
 
-def circular_convolution(signal, kernel):
-    """
-    Performs circular convolution between two signals using FFT.
-
-    If either of the inputs is a csr_matrix (sparse matrix),
-    it converts them to dense arrays before performing the convolution,
-    and converts the result back to csr_matrix if needed.
-
-    Args:
-        signal (array-like or csr_matrix): The first input signal.
-        kernel (array-like or csr_matrix): The second input signal.
-
-    Returns:
-        array-like or csr_matrix: The convolution result, in csr_matrix if any input was sparse.
-    """
-    # Check if either signal or kernel is a csr_matrix (sparse matrix)
-    signal_is_sparse = isinstance(signal, csr_matrix)
-    kernel_is_sparse = isinstance(kernel, csr_matrix)
-    
-    # Convert signals to dense arrays and flatten them
-    if signal_is_sparse:
-        signal = signal.toarray().flatten()
-    else:
-        signal = np.asarray(signal).flatten()
-        
-    if kernel_is_sparse:
-        kernel = kernel.toarray().flatten()
-    else:
-        kernel = np.asarray(kernel).flatten()
-        
-    # Determine the dimension for zero-padding (length of the longest signal)
-    dim = max(signal.shape[0], kernel.shape[0])
-    
-    # Zero-pad the signal and kernel to make their lengths equal
-    padded_signal = np.zeros(dim)
-    padded_signal[:signal.shape[0]] = signal
-    padded_kernel = np.zeros(dim)
-    padded_kernel[:kernel.shape[0]] = kernel
-    
-    # Perform the circular convolution using FFT (Fast Fourier Transform)
-    conv = np.real(np.fft.ifft(np.fft.fft(padded_signal) * np.fft.fft(padded_kernel)))
-    
-    # Convert the result back to csr_matrix if any input was sparse
-    if signal_is_sparse or kernel_is_sparse:
-        conv = csr_matrix(conv)
-    
-    return conv
-
 def hash_list(seq):
     """
     Hashes a list by converting it to a tuple and then hashing.
