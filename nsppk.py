@@ -595,5 +595,3 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
 
     # The fit_transform method is inherited from TransformerMixin,
     # which uses the fit and transform methods defined above.
-
-# TODO: Add conjunctive and disjunctive edges treatment
