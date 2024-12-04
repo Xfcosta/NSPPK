@@ -7,7 +7,10 @@ import networkx as nx                         # For graph operations
 import numpy as np                            # For numerical operations
 import scipy as sp                            # For scientific computing
 from sklearn.base import BaseEstimator, TransformerMixin  # Import scikit-learn base classes
-
+from sklearn.cluster import KMeans
+from sklearn.ensemble import ExtraTreesClassifier 
+from sklearn.decomposition import TruncatedSVD
+                                                                    
 def hash_list(seq):
     """
     Hashes a list by converting it to a tuple and then hashing.
@@ -388,6 +391,7 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
         ]
     return graph_node_vectors
 
+
 class NSPPK(BaseEstimator, TransformerMixin):
     """
     NSPPK (Neighborhood Subgraph Pairwise Propagation Kernel) class compatible with scikit-learn's Transformer interface.
@@ -404,8 +408,11 @@ class NSPPK(BaseEstimator, TransformerMixin):
         dense (bool, default=True): Whether to convert the feature matrix to a dense format.
         parallel (bool, default=True): Whether to encode graphs in parallel.
         attribute_key (str, optional): Node attribute key to use for additional features.
+        attribute_dim (int, optional): Dimension of the attribute vector. If not None, performs SVD for dimensionality reduction to this dimension.
+        attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes.
     """
-    def __init__(self, radius=1, distance=3, connector=0, nbits=10, dense=True, parallel=True, attribute_key=None):
+    def __init__(self, radius=1, distance=3, connector=0, nbits=10, dense=True, parallel=True, 
+                 attribute_key=None, attribute_dim=None, attribute_alphabet_size=None):
         """
         Initializes the NSPPK encoder with the given parameters.
 
@@ -417,6 +424,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
             dense (bool, optional): Whether to convert the feature matrix to a dense format. Defaults to True.
             parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
             attribute_key (str, optional): Node attribute key to use for additional features.
+            attribute_dim (int, optional): Dimension of the attribute vector. If not None, performs SVD for dimensionality reduction to this dimension.
+            attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes.
         """
         self.radius = radius
         self.distance = distance
@@ -425,6 +434,17 @@ class NSPPK(BaseEstimator, TransformerMixin):
         self.dense = dense
         self.parallel = parallel
         self.attribute_key = attribute_key
+        self.attribute_dim = attribute_dim
+        self.attribute_alphabet_size = attribute_alphabet_size
+
+        # Initialize the embedder if attribute_dim is specified
+        self.embedder = TruncatedSVD(n_components=self.attribute_dim) if attribute_dim else None
+
+        # Initialize the classifier for attribute clustering if attribute_alphabet_size is specified
+        self.classifier = ExtraTreesClassifier(
+            n_estimators=300, 
+            n_jobs=-1 if parallel else None
+        ) if attribute_alphabet_size else None
 
     def __repr__(self):
         """
@@ -433,14 +453,19 @@ class NSPPK(BaseEstimator, TransformerMixin):
         Returns:
             str: The string representation.
         """
+        # Create a list of key=value strings for all instance attributes
         infos = ['%s=%s' % (key, value) for key, value in self.__dict__.items()]
-        infos = ', '.join(infos) 
+        # Join the list into a single string separated by commas
+        infos = ', '.join(infos)
+        # Return the formatted string with class name and attributes
         return '%s(%s)' % (self.__class__.__name__, infos)
-    
+
     def fit(self, X, y=None):
         """
         Fit method for compatibility with scikit-learn's Transformer interface.
-        This transformer does not learn any parameters from the data, so it simply returns itself.
+
+        This transformer does not learn any parameters from the data, but it initializes attribute embedding
+        and clustering if applicable.
 
         Args:
             X (list of networkx.Graph): The input graphs to fit on.
@@ -449,8 +474,85 @@ class NSPPK(BaseEstimator, TransformerMixin):
         Returns:
             self: The instance itself.
         """
-        # No fitting necessary for this transformer
+        # Check if attribute embedding or clustering is required
+        if self.attribute_key is not None and (self.attribute_dim is not None or self.attribute_alphabet_size is not None):
+            # Extract node attributes from all graphs and stack them into a matrix
+            attribute_mtx = np.vstack([
+                graph.nodes[node_idx][self.attribute_key]
+                for graph in X
+                for node_idx in graph.nodes()
+            ])
+
+        # If attribute dimensionality reduction is specified, fit the embedder
+        if self.attribute_key is not None and self.attribute_dim is not None:
+            self.embedder.fit(attribute_mtx)
+            attribute_mtx = self.embedder.transform(attribute_mtx)
+
+        # If attribute clustering is specified, fit the classifier with KMeans targets
+        if self.attribute_key is not None and self.attribute_alphabet_size is not None:
+            # Perform KMeans clustering on the attribute matrix to generate target labels
+            targets = KMeans(n_clusters=self.attribute_alphabet_size).fit_predict(attribute_mtx)
+            # Fit the classifier to predict cluster labels from attributes
+            self.classifier.fit(attribute_mtx, targets)
+
         return self
+
+    def embed_attributes(self, X):
+        """
+        Apply SVD to reduce the dimensionality of node attributes.
+
+        Args:
+            X (list of networkx.Graph): List of graphs with attributes to embed.
+
+        Returns:
+            list of networkx.Graph: Graphs with embedded attributes.
+        """
+        out_graphs = []
+        for graph in X:
+            # Extract and stack node attributes into a matrix
+            attribute_mtx = np.vstack([
+                graph.nodes[node_idx][self.attribute_key]
+                for node_idx in graph.nodes()
+            ])
+            # Transform the attributes using the fitted embedder
+            embeddings = self.embedder.transform(attribute_mtx)
+            # Create a copy of the graph to avoid modifying the original
+            out_graph = graph.copy()
+            # Assign the original and embedded attributes to each node
+            for embedding, node_idx in zip(embeddings, out_graph.nodes()):
+                out_graph.nodes[node_idx]['original_' + self.attribute_key] = graph.nodes[node_idx][self.attribute_key]
+                out_graph.nodes[node_idx][self.attribute_key] = embedding
+            # Append the modified graph to the output list
+            out_graphs.append(out_graph)
+        return out_graphs
+
+    def set_discrete_labels(self, graphs):
+        """
+        Assign discrete labels to nodes in the graphs based on clustered attributes.
+
+        Args:
+            graphs (list of networkx.Graph): Input graphs.
+
+        Returns:
+            list of networkx.Graph: Graphs with updated node labels.
+        """
+        out_graphs = []
+        for graph in graphs:
+            # Extract and stack node attributes into a matrix
+            attribute_mtx = np.vstack([
+                graph.nodes[node_idx][self.attribute_key]
+                for node_idx in graph.nodes()
+            ])
+            # Predict discrete labels using the trained classifier
+            labels = self.classifier.predict(attribute_mtx)
+            # Create a copy of the graph to avoid modifying the original
+            out_graph = graph.copy()
+            # Assign the predicted label to each node
+            for label, node_idx in zip(labels, out_graph.nodes()):
+                out_graph.nodes[node_idx]['label'] = label
+            # Append the modified graph to the output list
+            out_graphs.append(out_graph)
+        return out_graphs
 
     def transform(self, X):
         """
@@ -462,27 +564,42 @@ class NSPPK(BaseEstimator, TransformerMixin):
         Returns:
             numpy.ndarray or scipy.sparse.csr_matrix: The feature matrix.
         """
+        # If attribute dimensionality reduction is specified, apply embedding
+        if self.attribute_key and self.attribute_dim:
+            X = self.embed_attributes(X)
+        # If attribute clustering is specified, assign discrete labels to nodes
+        if self.attribute_key is not None and self.attribute_alphabet_size is not None:
+            X = self.set_discrete_labels(X)
+
         # Encode the graphs into a sparse feature matrix using the encoder function
         data_mtx = paired_graphs_vector_encoder(
-            X, self.radius, self.distance, self.connector, self.nbits,
-            self.parallel, self.attribute_key
+            X, 
+            self.radius, 
+            self.distance, 
+            self.connector, 
+            self.nbits,
+            self.parallel, 
+            self.attribute_key
         )
 
+        # Convert the feature matrix to dense format if specified
         if self.dense:
-            # Convert to dense format if specified
             data_mtx = data_mtx.todense().A
+
         return data_mtx
-    
+
     # The fit_transform method is inherited from TransformerMixin,
     # which uses the fit and transform methods defined above.
 
-class NodeNSPPK(BaseEstimator, TransformerMixin):
+
+class NodeNSPPK(NSPPK):
     """
     NodeNSPPK (Node Neighborhood Subgraph Pairwise Propagation Kernel) class compatible with scikit-learn's Transformer interface.
 
-    This class encodes graphs into node feature vectors suitable for node-level machine learning models.
-    It captures both local (node-level) and structural (subgraph-level) information by hashing node labels
-    and the structure of their neighborhoods.
+    Inherits from NSPPK and specializes the transformation process to generate node-level feature vectors suitable for
+    node-level machine learning models. It captures both local (node-level) and structural (subgraph-level) information
+    by hashing node labels and the structure of their neighborhoods. Additionally, it supports dimensionality reduction
+    of node attributes using Singular Value Decomposition (SVD).
 
     Parameters:
         radius (int, default=1): The radius for rooted graph hashing.
@@ -492,10 +609,13 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
         dense (bool, default=True): Whether to convert the feature matrix to a dense format.
         parallel (bool, default=True): Whether to encode graphs in parallel.
         attribute_key (str, optional): Node attribute key to use for additional features.
+        attribute_dim (int, optional): The target dimensionality for attribute vectors; if set, applies SVD for dimensionality reduction.
+        attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes.
     """
-    def __init__(self, radius=1, distance=3, connector=0, nbits=10, dense=True, parallel=True, attribute_key=None):
+    def __init__(self, radius=1, distance=3, connector=0, nbits=10, dense=True, parallel=True, 
+                 attribute_key=None, attribute_dim=None, attribute_alphabet_size=None):
         """
-        Initializes the NodeNSPPK encoder with the given parameters.
+        Initialize the NodeNSPPK encoder with the specified parameters.
 
         Args:
             radius (int, optional): The radius for rooted graph hashing. Defaults to 1.
@@ -505,61 +625,70 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             dense (bool, optional): Whether to convert the feature matrix to a dense format. Defaults to True.
             parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
             attribute_key (str, optional): Node attribute key to use for additional features.
+            attribute_dim (int, optional): The target dimensionality for attribute vectors; if set, applies SVD for dimensionality reduction. Defaults to None.
+            attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes. Defaults to None.
         """
-        self.radius = radius
-        self.distance = distance
-        self.connector = connector
-        self.nbits = nbits
-        self.dense = dense
-        self.parallel = parallel
-        self.attribute_key = attribute_key
-
-    def __repr__(self):
-        """
-        Returns a string representation of the NodeNSPPK instance.
-
-        Returns:
-            str: The string representation.
-        """
-        infos = ['%s=%s' % (key, value) for key, value in self.__dict__.items()]
-        infos = ', '.join(infos) 
-        return '%s(%s)' % (self.__class__.__name__, infos)
-    
-    def fit(self, X, y=None):
-        """
-        Fit method for compatibility with scikit-learn's Transformer interface.
-        This transformer does not learn any parameters from the data, so it simply returns itself.
-
-        Args:
-            X (list of networkx.Graph): The input graphs to fit on.
-            y (array-like, optional): Target values (unused).
-
-        Returns:
-            self: The instance itself.
-        """
-        # No fitting necessary for this transformer
-        return self
+        # Initialize the superclass (NSPPK) with the provided parameters
+        super().__init__(
+            radius=radius,
+            distance=distance,
+            connector=connector,
+            nbits=nbits,
+            dense=dense,
+            parallel=parallel,
+            attribute_key=attribute_key,
+            attribute_dim=attribute_dim,
+            attribute_alphabet_size=attribute_alphabet_size
+        )
 
     def transform(self, X):
         """
-        Transforms the input graphs into node feature vectors.
+        Transform input graphs into node-level feature vectors.
+
+        This method encodes each graph into a list of node feature matrices, where each matrix corresponds to a graph
+        and contains feature vectors for its nodes. If `attribute_dim` is specified, it applies SVD to reduce the
+        dimensionality of node attributes before encoding. Additionally, if `attribute_alphabet_size` is specified,
+        it assigns discrete labels to nodes based on clustered attributes.
 
         Args:
             X (list of networkx.Graph): The list of graphs to transform.
 
         Returns:
-            list of numpy.ndarray or scipy.sparse.csr_matrix: A list of node feature matrices for each graph.
+            list of numpy.ndarray or scipy.sparse.csr_matrix: A list where each element is a node feature matrix for a graph.
         """
-        # Encode the graphs into node feature vectors using the encoder function
+        # If attribute dimensionality reduction is specified, apply embedding
+        if self.attribute_key and self.attribute_dim:
+            X = self.embed_attributes(X)
+        # If attribute clustering is specified, assign discrete labels to nodes
+        if self.attribute_key is not None and self.attribute_alphabet_size is not None:
+            X = self.set_discrete_labels(X)
+
+        # Encode the graphs into node feature vectors using the node-specific encoder function
         nodes_data_mtx_list = paired_node_vector_encoder(
-            X, self.radius, self.distance, self.connector, self.nbits,
-            self.parallel, self.attribute_key
+            X,
+            self.radius,
+            self.distance,
+            self.connector,
+            self.nbits,
+            self.parallel,
+            self.attribute_key
         )
 
+        # Convert each node feature matrix to dense format if specified
         if self.dense:
-            # Convert to dense format if specified
             nodes_data_mtx_list = [mtx.todense().A for mtx in nodes_data_mtx_list]
+
         return nodes_data_mtx_list
+
+    def __repr__(self):
+        """
+        Generate a string representation of the NodeNSPPK instance.
+
+        Returns:
+            str: The string representation of the object.
+        """
+        # Reuse the NSPPK __repr__ method for consistency
+        return super().__repr__()
 
     # The fit_transform method is inherited from TransformerMixin,
     # which uses the fit and transform methods defined above.
