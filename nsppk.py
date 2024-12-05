@@ -165,7 +165,7 @@ def items_to_sparse_histogram(items, nbits):
     vector = sp.sparse.csr_matrix((data, (rows, cols)), shape=(1, 2**nbits))
     return vector 
 
-def node_vectors(original_graph, radius, distance, connector, nbits):
+def structural_node_vectors(original_graph, radius, distance, connector, nbits):
     """
     Generates a feature vector for each node in the graph.
 
@@ -295,15 +295,15 @@ def graph_vector(original_graph, radius, distance, connector, nbits, attribute_k
         scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
     """
     # Generate node vectors (feature vectors for each node)
-    node_vectors_mtx = node_vectors(
+    node_vectors_mtx = structural_node_vectors(
         original_graph, radius, distance, connector, nbits
     )
     if attribute_key is None:
-        # If no attribute key is specified or convolution is used, sum the node vectors to get the graph vector
+        # If no attribute key is not specified sum the node vectors to get the graph vector
         vector = node_vectors_mtx.sum(axis=0)
         vector = csr_matrix(vector)  # Ensure the result is a CSR matrix
     else:
-        # If an attribute key is specified and convolution is not used, use the node attributes to weight the node vectors
+        # If an attribute key is specified, use the node attributes to weight the node vectors
         attribute_mtx = np.vstack([
             original_graph.nodes[node_idx][attribute_key]
             for node_idx in original_graph.nodes()
@@ -314,6 +314,38 @@ def graph_vector(original_graph, radius, distance, connector, nbits, attribute_k
         vector = vector_.reshape(1, -1)
         vector = csr_matrix(vector)  # Ensure the result is a CSR matrix
     return vector
+
+def node_vector(original_graph, radius, distance, connector, nbits, attribute_key=None):
+    """
+    Generates a feature vector for a single graph based on node and subgraph hashes.
+
+    Args:
+        original_graph (networkx.Graph): The input graph.
+        radius (int): The radius for rooted graph hashing.
+        distance (int): The distance parameter for paired hashing.
+        connector (int): Connector thickness.
+        nbits (int): Number of bits for hashing.
+        attribute_key (str, optional): Node attribute key to use for additional features.
+
+    Returns:
+        scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
+    """
+    # Generate node vectors (feature vectors for each node)
+    node_vectors_mtx = structural_node_vectors(
+        original_graph, radius, distance, connector, nbits
+    )
+    if attribute_key is not None:
+        # If an attribute key is specified use the node attributes to weight the node vectors
+        attribute_mtx = np.vstack([
+            original_graph.nodes[node_idx][attribute_key]
+            for node_idx in original_graph.nodes()
+        ])
+        # Multiply attributes with node vectors to get the graph vector
+        feature_node_vectors_mtx = node_vectors_mtx.todense().A
+        feature_node_vectors_mtx = attribute_mtx.T.dot(feature_node_vectors_mtx).dot(feature_node_vectors_mtx.T).T
+        feature_node_vectors_mtx = csr_matrix(feature_node_vectors_mtx)  # Ensure the result is a CSR matrix
+        node_vectors_mtx = sp.sparse.hstack([csr_matrix(attribute_mtx), feature_node_vectors_mtx, node_vectors_mtx])
+    return node_vectors_mtx
 
 def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, attribute_key=None):
     """
@@ -373,7 +405,7 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
     if parallel:
         # Define a helper function for parallel processing
         def func(graph): 
-            return node_vectors(graph, radius, distance, connector, nbits)
+            return node_vector(graph, radius, distance, connector, nbits, attribute_key)
         
         # Get the number of available CPUs
         n_cpus = mp.cpu_count()
@@ -386,7 +418,7 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
     else:
         # Encode graphs sequentially
         graph_node_vectors = [
-            node_vectors(graph, radius, distance, connector, nbits)
+            node_vector(graph, radius, distance, connector, nbits, attribute_key)
             for graph in graphs
         ]
     return graph_node_vectors
@@ -485,6 +517,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
 
         # If attribute dimensionality reduction is specified, fit the embedder
         if self.attribute_key is not None and self.attribute_dim is not None:
+            self.embedder = TruncatedSVD(n_components=min(self.attribute_dim, attribute_mtx.shape[1]-1))
             self.embedder.fit(attribute_mtx)
             attribute_mtx = self.embedder.transform(attribute_mtx)
 
