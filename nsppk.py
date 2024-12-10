@@ -195,7 +195,7 @@ def structural_node_vectors(original_graph, radius, distance, connector, nbits, 
         graph.nodes[node_idx]['rooted_graph_hash'] = np.zeros(cutoff, dtype=int)
         # For each radius from 0 up to (but not including) cutoff
         degree = graph.degree[node_idx]
-        if degree > degree_threshold: effective_cutoff = 0
+        if degree_threshold is not None and degree > degree_threshold: effective_cutoff = 0
         else: effective_cutoff = cutoff
         for r in range(effective_cutoff):
             # Compute the rooted graph hash for the node at radius 'r'
