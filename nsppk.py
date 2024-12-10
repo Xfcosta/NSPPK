@@ -10,7 +10,7 @@ from sklearn.base import BaseEstimator, TransformerMixin  # Import scikit-learn 
 from sklearn.cluster import KMeans
 from sklearn.ensemble import ExtraTreesClassifier 
 from sklearn.decomposition import TruncatedSVD
-                                                                    
+
 def hash_list(seq):
     """
     Hashes a list by converting it to a tuple and then hashing.
@@ -50,9 +50,9 @@ def hash_value(value, nbits=10):
         int: The hashed value limited to nbits, and in the range [2, 2**nbits - 1]
     """
     max_index = 2 ** nbits
-    # Compute the masked hash value
-    h = masked_hash_value(value, max_index - 1 - 2)  # Adjust the bitmask to exclude indices 0 and 1
-    # Shift the hash to start from 2
+    # Compute the masked hash value, adjusting to exclude indices 0 and 1
+    h = masked_hash_value(value, max_index - 1 - 2)
+    # Shift the hash to start from 2 to ensure it's within the desired range
     h += 2
     return h
 
@@ -81,7 +81,7 @@ def node_hash(node_idx, graph):
         neighbor_edge_hash = hash((neighbor_label_hash, edge_label_hash))
         edges_h.append(neighbor_edge_hash)
     
-    # Hash the sorted list of neighbor-edge hashes
+    # Hash the sorted list of neighbor-edge hashes to ensure consistency
     nh = hash_list(sorted(edges_h))
     
     # Combine the node's own label hash and the neighbors' hash
@@ -132,7 +132,7 @@ def rooted_graph_hash(node_idx, graph, radius=1):
         node_idxs = dist_to_node_idxs_dict[dist]
         # Collect hashes of all nodes at the current distance
         codes_list = [graph.nodes[curr_node_idx]['node_hash'] for curr_node_idx in node_idxs]
-        # Hash the sorted list of node hashes
+        # Hash the sorted list of node hashes to maintain consistency
         code = hash_list(sorted(codes_list))
         # Append the code for this distance
         iso_distance_codes_list.append(code)
@@ -152,7 +152,7 @@ def items_to_sparse_histogram(items, nbits):
     Returns:
         scipy.sparse.csr_matrix: The resulting sparse histogram vector.
     """
-    # Count occurrences of each item
+    # Count occurrences of each item using Counter
     histogram_dict = Counter(items)
     # Number of unique items
     num_items = len(histogram_dict)
@@ -175,6 +175,7 @@ def structural_node_vectors(original_graph, radius, distance, connector, nbits, 
         distance (int): The distance parameter for paired hashing.
         connector (int): Connector thickness.
         nbits (int): Number of bits for hashing.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
 
     Returns:
         scipy.sparse.csr_matrix: The sparse matrix of node feature vectors.
@@ -193,10 +194,13 @@ def structural_node_vectors(original_graph, radius, distance, connector, nbits, 
     for node_idx in graph.nodes():
         # Initialize an array to store rooted graph hashes up to the cutoff radius
         graph.nodes[node_idx]['rooted_graph_hash'] = np.zeros(cutoff, dtype=int)
-        # For each radius from 0 up to (but not including) cutoff
+        # Determine effective cutoff based on degree threshold
         degree = graph.degree[node_idx]
-        if degree_threshold is not None and degree > degree_threshold: effective_cutoff = 0
-        else: effective_cutoff = cutoff
+        if degree_threshold is not None and degree > degree_threshold:
+            effective_cutoff = 0
+        else:
+            effective_cutoff = cutoff
+        # For each radius from 0 up to (but not including) cutoff
         for r in range(effective_cutoff):
             # Compute the rooted graph hash for the node at radius 'r'
             label = rooted_graph_hash(node_idx, graph, radius=r)
@@ -293,6 +297,7 @@ def graph_vector(original_graph, radius, distance, connector, nbits, attribute_k
         connector (int): Connector thickness.
         nbits (int): Number of bits for hashing.
         attribute_key (str, optional): Node attribute key to use for additional features.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
 
     Returns:
         scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
@@ -302,7 +307,7 @@ def graph_vector(original_graph, radius, distance, connector, nbits, attribute_k
         original_graph, radius, distance, connector, nbits, degree_threshold
     )
     if attribute_key is None:
-        # If no attribute key is not specified sum the node vectors to get the graph vector
+        # If no attribute key is specified, sum the node vectors to get the graph vector
         vector = node_vectors_mtx.sum(axis=0)
         vector = csr_matrix(vector)  # Ensure the result is a CSR matrix
     else:
@@ -329,6 +334,7 @@ def node_vector(original_graph, radius, distance, connector, nbits, attribute_ke
         connector (int): Connector thickness.
         nbits (int): Number of bits for hashing.
         attribute_key (str, optional): Node attribute key to use for additional features.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
 
     Returns:
         scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
@@ -338,15 +344,16 @@ def node_vector(original_graph, radius, distance, connector, nbits, attribute_ke
         original_graph, radius, distance, connector, nbits, degree_threshold
     )
     if attribute_key is not None:
-        # If an attribute key is specified use the node attributes to weight the node vectors
+        # If an attribute key is specified, use the node attributes to create additional features
         attribute_mtx = np.vstack([
             original_graph.nodes[node_idx][attribute_key]
             for node_idx in original_graph.nodes()
         ])
         # Multiply attributes with node vectors to get the graph vector
         feature_node_vectors_mtx = node_vectors_mtx.todense().A
-        feature_node_vectors_mtx = attribute_mtx.T.dot(feature_node_vectors_mtx).dot(feature_node_vectors_mtx.T).T
+        feature_node_vectors_mtx = attribute_mtx.T.dot(node_vectors_mtx).dot(feature_node_vectors_mtx.T).T
         feature_node_vectors_mtx = csr_matrix(feature_node_vectors_mtx)  # Ensure the result is a CSR matrix
+        # Horizontally stack the attribute matrix, feature node vectors, and original node vectors
         node_vectors_mtx = sp.sparse.hstack([csr_matrix(attribute_mtx), feature_node_vectors_mtx, node_vectors_mtx])
     return node_vectors_mtx
 
@@ -362,6 +369,7 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
         nbits (int): Number of bits for hashing.
         parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
         attribute_key (str, optional): Node attribute key to use for additional features.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
 
     Returns:
         scipy.sparse.csr_matrix: The sparse matrix where each row is a graph's feature vector.
@@ -401,6 +409,7 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
         nbits (int): Number of bits for hashing.
         parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
         attribute_key (str, optional): Node attribute key to use for additional features.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
 
     Returns:
         list of scipy.sparse.csr_matrix: A list where each element is a matrix of node vectors for a graph.
@@ -427,41 +436,48 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
     return graph_node_vectors
 
 
-class NSPPK(BaseEstimator, TransformerMixin):
+# Import necessary modules and libraries
+from sklearn.base import BaseEstimator, TransformerMixin  # Import scikit-learn base classes
+from sklearn.cluster import KMeans
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.decomposition import TruncatedSVD
+import numpy as np
+import scipy as sp
+from scipy.sparse import csr_matrix
+import multiprocessing_on_dill as mp  # For parallel processing with support for more object types
+import networkx as nx  # For graph operations
+from collections import Counter, defaultdict  # For counting elements and creating dictionaries with default types
+from copy import copy  # For copying objects
+
+class AbstractNSPPK(BaseEstimator, TransformerMixin):
     """
-    NSPPK (Neighborhood Subgraph Pairwise Propagation Kernel) class compatible with scikit-learn's Transformer interface.
-
-    This class encodes graphs into feature vectors suitable for machine learning models. It captures both
-    local (node-level) and structural (subgraph-level) information by hashing node labels and the structure
-    of their neighborhoods.
-
+    AbstractNSPPK is an abstract base class for encoding graphs into feature vectors.
+    
+    This class is initialized with generic components for embedding, clustering, and classification,
+    allowing for flexibility and extensibility. Subclasses can specialize these components to 
+    implement specific encoding strategies.
+    
     Parameters:
+        embedder (transformer, optional): A transformer for attribute embedding (e.g., TruncatedSVD).
+        clustering_predictor (estimator, optional): A clustering model for attribute clustering (e.g., KMeans).
+        classifier (estimator, optional): A classifier for predicting cluster labels (e.g., ExtraTreesClassifier).
         radius (int, default=1): The radius for rooted graph hashing.
         distance (int, default=3): The distance parameter for paired hashing.
         connector (int, default=0): Connector thickness.
         nbits (int, default=10): Number of bits for hashing.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
         dense (bool, default=True): Whether to convert the feature matrix to a dense format.
         parallel (bool, default=True): Whether to encode graphs in parallel.
         attribute_key (str, optional): Node attribute key to use for additional features.
         attribute_dim (int, optional): Dimension of the attribute vector. If not None, performs SVD for dimensionality reduction to this dimension.
         attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes.
     """
-    def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, 
+    def __init__(self, embedder=None, clustering_predictor=None, classifier=None, radius=1, distance=3, connector=0,
+                 nbits=10, degree_threshold=None, dense=True, parallel=True,
                  attribute_key=None, attribute_dim=None, attribute_alphabet_size=None):
-        """
-        Initializes the NSPPK encoder with the given parameters.
-
-        Args:
-            radius (int, optional): The radius for rooted graph hashing. Defaults to 1.
-            distance (int, optional): The distance parameter for paired hashing. Defaults to 3.
-            connector (int, optional): Connector thickness. Defaults to 0.
-            nbits (int, optional): Number of bits for hashing. Defaults to 10.
-            dense (bool, optional): Whether to convert the feature matrix to a dense format. Defaults to True.
-            parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
-            attribute_key (str, optional): Node attribute key to use for additional features.
-            attribute_dim (int, optional): Dimension of the attribute vector. If not None, performs SVD for dimensionality reduction to this dimension.
-            attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes.
-        """
+        self.embedder = embedder
+        self.clustering_predictor = clustering_predictor
+        self.classifier = classifier
         self.radius = radius
         self.distance = distance
         self.connector = connector
@@ -473,40 +489,28 @@ class NSPPK(BaseEstimator, TransformerMixin):
         self.attribute_dim = attribute_dim
         self.attribute_alphabet_size = attribute_alphabet_size
 
-        # Initialize the embedder if attribute_dim is specified
-        self.embedder = TruncatedSVD(n_components=self.attribute_dim) if attribute_dim else None
-
-        # Initialize the classifier for attribute clustering if attribute_alphabet_size is specified
-        self.classifier = ExtraTreesClassifier(
-            n_estimators=300, 
-            n_jobs=-1 if parallel else None
-        ) if attribute_alphabet_size else None
-
     def __repr__(self):
         """
-        Returns a string representation of the NSPPK instance.
-
+        Returns a string representation of the AbstractNSPPK instance.
+        
         Returns:
             str: The string representation.
         """
-        # Create a list of key=value strings for all instance attributes
         infos = ['%s=%s' % (key, value) for key, value in self.__dict__.items()]
-        # Join the list into a single string separated by commas
         infos = ', '.join(infos)
-        # Return the formatted string with class name and attributes
         return '%s(%s)' % (self.__class__.__name__, infos)
 
     def fit(self, graphs, targets=None):
         """
-        Fit method for compatibility with scikit-learn's Transformer interface.
-
-        This transformer does not learn any parameters from the data, but it initializes attribute embedding
-        and clustering if applicable.
-
+        Fit the encoder on the given graphs.
+        
+        This method fits the embedder and clustering predictor if they are provided.
+        If attribute clustering is specified, it also fits the classifier.
+        
         Args:
             graphs (list of networkx.Graph): The input graphs to fit on.
             targets (array-like, optional): Target values (unused).
-
+        
         Returns:
             self: The instance itself.
         """
@@ -520,30 +524,33 @@ class NSPPK(BaseEstimator, TransformerMixin):
             ])
 
         # If attribute dimensionality reduction is specified, fit the embedder
-        if self.attribute_key is not None and self.attribute_dim is not None:
-            self.embedder = TruncatedSVD(n_components=min(self.attribute_dim, attribute_mtx.shape[1]-1))
+        if self.attribute_key is not None and self.attribute_dim is not None and self.embedder is not None:
             self.embedder.fit(attribute_mtx)
             attribute_mtx = self.embedder.transform(attribute_mtx)
 
-        # If attribute clustering is specified, fit the classifier with KMeans targets
+        # If attribute clustering is specified, fit the clustering predictor and classifier
         if self.attribute_key is not None and self.attribute_alphabet_size is not None:
-            # Perform KMeans clustering on the attribute matrix to generate target labels
-            targets = KMeans(n_clusters=self.attribute_alphabet_size).fit_predict(attribute_mtx)
+            # Perform clustering on the attribute matrix to generate target labels
+            targets = self.clustering_predictor.fit_predict(attribute_mtx)
             # Fit the classifier to predict cluster labels from attributes
-            self.classifier.fit(attribute_mtx, targets)
+            if self.classifier is not None:
+                self.classifier.fit(attribute_mtx, targets)
 
         return self
 
     def embed_attributes(self, graphs):
         """
-        Apply SVD to reduce the dimensionality of node attributes.
-
+        Apply the embedder to reduce the dimensionality of node attributes.
+        
         Args:
             graphs (list of networkx.Graph): List of graphs with attributes to embed.
-
+        
         Returns:
             list of networkx.Graph: Graphs with embedded attributes.
         """
+        if self.embedder is None:
+            return graphs  # No embedding to perform
+
         out_graphs = []
         for graph in graphs:
             # Extract and stack node attributes into a matrix
@@ -566,13 +573,16 @@ class NSPPK(BaseEstimator, TransformerMixin):
     def set_discrete_labels(self, graphs):
         """
         Assign discrete labels to nodes in the graphs based on clustered attributes.
-
+        
         Args:
             graphs (list of networkx.Graph): Input graphs.
-
+        
         Returns:
             list of networkx.Graph: Graphs with updated node labels.
         """
+        if self.classifier is None:
+            return graphs  # No classifier to assign labels
+
         out_graphs = []
         for graph in graphs:
             # Extract and stack node attributes into a matrix
@@ -594,10 +604,12 @@ class NSPPK(BaseEstimator, TransformerMixin):
     def transform(self, graphs):
         """
         Transforms the input graphs into feature vectors.
-
+        
+        This method handles attribute embedding, label assignment, and encoding of graphs into feature vectors.
+        
         Args:
             graphs (list of networkx.Graph): The list of graphs to transform.
-
+        
         Returns:
             numpy.ndarray or scipy.sparse.csr_matrix: The feature matrix.
         """
@@ -625,6 +637,75 @@ class NSPPK(BaseEstimator, TransformerMixin):
             data_mtx = data_mtx.todense().A
 
         return data_mtx
+
+
+class NSPPK(AbstractNSPPK):
+    """
+    NSPPK (Neighborhood Subgraph Pairwise Propagation Kernel) class specialized from AbstractNSPPK.
+    
+    This class encodes graphs into feature vectors suitable for machine learning models by capturing both
+    local (node-level) and structural (subgraph-level) information. It specializes the AbstractNSPPK by
+    initializing it with specific components: TruncatedSVD for embedding, KMeans for clustering, and 
+    ExtraTreesClassifier for classification.
+    
+    Parameters:
+        radius (int, default=1): The radius for rooted graph hashing.
+        distance (int, default=3): The distance parameter for paired hashing.
+        connector (int, default=0): Connector thickness.
+        nbits (int, default=10): Number of bits for hashing.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
+        dense (bool, default=True): Whether to convert the feature matrix to a dense format.
+        parallel (bool, default=True): Whether to encode graphs in parallel.
+        attribute_key (str, optional): Node attribute key to use for additional features.
+        attribute_dim (int, optional): Dimension of the attribute vector. If not None, performs SVD for dimensionality reduction to this dimension.
+        attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes.
+    """
+    def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, 
+                 attribute_key=None, attribute_dim=None, attribute_alphabet_size=None):
+        """
+        Initializes the NSPPK encoder with specific components: TruncatedSVD, KMeans, and ExtraTreesClassifier.
+        
+        Args:
+            radius (int, optional): The radius for rooted graph hashing. Defaults to 1.
+            distance (int, optional): The distance parameter for paired hashing. Defaults to 3.
+            connector (int, optional): Connector thickness. Defaults to 0.
+            nbits (int, optional): Number of bits for hashing. Defaults to 10.
+            degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
+            dense (bool, optional): Whether to convert the feature matrix to a dense format. Defaults to True.
+            parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
+            attribute_key (str, optional): Node attribute key to use for additional features.
+            attribute_dim (int, optional): Dimension of the attribute vector. If not None, performs SVD for dimensionality reduction to this dimension. Defaults to None.
+            attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes. Defaults to None.
+        """
+        # Initialize the embedder if attribute_dim is specified
+        embedder = TruncatedSVD(n_components=attribute_dim) if attribute_dim else None
+
+        # Initialize the clustering predictor if attribute_alphabet_size is specified
+        clustering_predictor = KMeans(n_clusters=attribute_alphabet_size) if attribute_alphabet_size else None
+
+        # Initialize the classifier if attribute_alphabet_size is specified
+        classifier = ExtraTreesClassifier(
+            n_estimators=300, 
+            n_jobs=-1 if parallel else None
+        ) if attribute_alphabet_size else None
+
+        # Initialize the superclass (AbstractNSPPK) with the specific components and parameters
+        super().__init__(
+            embedder=embedder,
+            clustering_predictor=clustering_predictor,
+            classifier=classifier,
+            radius=radius,
+            distance=distance,
+            connector=connector,
+            nbits=nbits,
+            degree_threshold=degree_threshold,
+            dense=dense,
+            parallel=parallel,
+            attribute_key=attribute_key,
+            attribute_dim=attribute_dim,
+            attribute_alphabet_size=attribute_alphabet_size
+        )
+
 
     # The fit_transform method is inherited from TransformerMixin,
     # which uses the fit and transform methods defined above.
