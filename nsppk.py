@@ -281,10 +281,64 @@ def structural_node_vectors(original_graph, radius, distance, connector, nbits, 
     
     # Stack all node vectors vertically to create a sparse matrix
     node_vectors_mtx = sp.sparse.vstack(node_vectors)
-
     # Return the matrix of node feature vectors
     return node_vectors_mtx
 
+def node_vector(original_graph, radius, distance, connector, nbits, attribute_key=None, degree_threshold=None):
+    """
+    Generates a feature vector for a single graph based on node and subgraph hashes.
+
+    Args:
+        original_graph (networkx.Graph): The input graph.
+        radius (int): The radius for rooted graph hashing.
+        distance (int): The distance parameter for paired hashing.
+        connector (int): Connector thickness.
+        nbits (int): Number of bits for hashing.
+        attribute_key (str, optional): Node attribute key to use for additional features.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
+
+    Returns:
+        scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
+    """
+    # Generate node vectors (feature vectors for each node)
+    node_vectors_mtx = structural_node_vectors(
+        original_graph, radius, distance, connector, nbits, degree_threshold
+    )
+    if attribute_key is not None:
+        # If an attribute key is specified, use the node attributes to create additional features
+        attribute_mtx = np.vstack([
+            original_graph.nodes[node_idx][attribute_key]
+            for node_idx in original_graph.nodes()
+        ])
+        # Multiply attributes with node vectors to get the graph vector
+        feature_node_vectors_mtx = node_vectors_mtx.todense().A
+        feature_node_vectors_mtx = attribute_mtx.T.dot(feature_node_vectors_mtx).dot(feature_node_vectors_mtx.T).T
+        feature_node_vectors_mtx = csr_matrix(feature_node_vectors_mtx)  # Ensure the result is a CSR matrix
+        # Horizontally stack the attribute matrix, feature node vectors, and original node vectors
+        node_vectors_mtx = sp.sparse.hstack([csr_matrix(attribute_mtx), feature_node_vectors_mtx, node_vectors_mtx])
+    return node_vectors_mtx
+
+def node_graph_vector(original_graph, radius, distance, connector, nbits, attribute_key=None, degree_threshold=None):
+    """
+    Generates a feature vector for a single graph based on node and subgraph hashes.
+
+    Args:
+        original_graph (networkx.Graph): The input graph.
+        radius (int): The radius for rooted graph hashing.
+        distance (int): The distance parameter for paired hashing.
+        connector (int): Connector thickness.
+        nbits (int): Number of bits for hashing.
+        attribute_key (str, optional): Node attribute key to use for additional features.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
+
+    Returns:
+        scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
+    """
+    # Generate node vectors (feature vectors for each node)
+    node_vectors_mtx = node_vector(original_graph, radius, distance, connector, nbits, attribute_key, degree_threshold)
+    vector = node_vectors_mtx.sum(axis=0).reshape(1, -1)
+    vector = csr_matrix(vector)  # Ensure the result is a CSR matrix
+    return vector
 
 def graph_vector(original_graph, radius, distance, connector, nbits, attribute_key=None, degree_threshold=None):
     """
@@ -323,39 +377,19 @@ def graph_vector(original_graph, radius, distance, connector, nbits, attribute_k
         vector = csr_matrix(vector)  # Ensure the result is a CSR matrix
     return vector
 
-def node_vector(original_graph, radius, distance, connector, nbits, attribute_key=None, degree_threshold=None):
+def split_into_chunks(lst, n):
     """
-    Generates a feature vector for a single graph based on node and subgraph hashes.
+    Splits a list into 'n' nearly equal chunks.
 
     Args:
-        original_graph (networkx.Graph): The input graph.
-        radius (int): The radius for rooted graph hashing.
-        distance (int): The distance parameter for paired hashing.
-        connector (int): Connector thickness.
-        nbits (int): Number of bits for hashing.
-        attribute_key (str, optional): Node attribute key to use for additional features.
-        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
+        lst (list): The list to split.
+        n (int): The number of chunks.
 
     Returns:
-        scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
+        list of lists: A list containing 'n' sublists.
     """
-    # Generate node vectors (feature vectors for each node)
-    node_vectors_mtx = structural_node_vectors(
-        original_graph, radius, distance, connector, nbits, degree_threshold
-    )
-    if attribute_key is not None:
-        # If an attribute key is specified, use the node attributes to create additional features
-        attribute_mtx = np.vstack([
-            original_graph.nodes[node_idx][attribute_key]
-            for node_idx in original_graph.nodes()
-        ])
-        # Multiply attributes with node vectors to get the graph vector
-        feature_node_vectors_mtx = node_vectors_mtx.todense().A
-        feature_node_vectors_mtx = attribute_mtx.T.dot(node_vectors_mtx).dot(feature_node_vectors_mtx.T).T
-        feature_node_vectors_mtx = csr_matrix(feature_node_vectors_mtx)  # Ensure the result is a CSR matrix
-        # Horizontally stack the attribute matrix, feature node vectors, and original node vectors
-        node_vectors_mtx = sp.sparse.hstack([csr_matrix(attribute_mtx), feature_node_vectors_mtx, node_vectors_mtx])
-    return node_vectors_mtx
+    k, m = divmod(len(lst), n)
+    return [lst[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n)]
 
 def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, attribute_key=None, degree_threshold=None):
     """
@@ -374,28 +408,107 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
     Returns:
         scipy.sparse.csr_matrix: The sparse matrix where each row is a graph's feature vector.
     """
-    if parallel:
-        # Define a helper function for parallel processing
-        def func(graph): 
-            return graph_vector(graph, radius, distance, connector, nbits, attribute_key, degree_threshold)
+    # Determine the number of available CPUs
+    n_cpus = mp.cpu_count()
+
+    if parallel and len(graphs) > n_cpus:
+        def process_subset(subset):
+            """
+            Processes a subset of graphs by encoding each graph sequentially.
+
+            Args:
+                subset (list of networkx.Graph): A subset of graphs to encode.
+
+            Returns:
+                list of scipy.sparse.csr_matrix: Encoded feature vectors for the subset.
+            """
+            return [
+                graph_vector(graph, radius, distance, connector, nbits, attribute_key, degree_threshold)
+                for graph in subset
+            ]
+
         
-        # Get the number of available CPUs
-        n_cpus = mp.cpu_count()
+        # Split the list of graphs into 'n_cpus' roughly equal subsets
+        subsets = split_into_chunks(graphs, n_cpus)
+
         # Create a pool of worker processes
-        pool = mp.Pool(n_cpus)
-        # Encode graphs in parallel
-        graph_vectors = pool.map(func, graphs)
-        # Close the pool after processing
-        pool.close()
+        with mp.Pool(n_cpus) as pool:
+            # Encode graphs in parallel by processing each subset
+            graph_vectors_subsets = pool.map(process_subset, subsets)
+
+        # Flatten the list of lists into a single list of graph vectors
+        graph_vectors = [vec for subset in graph_vectors_subsets for vec in subset]
     else:
         # Encode graphs sequentially
         graph_vectors = [
             graph_vector(graph, radius, distance, connector, nbits, attribute_key, degree_threshold)
             for graph in graphs
         ]
+
     # Stack all graph vectors vertically into a single sparse matrix
     graphs_vector_mtx = sp.sparse.vstack(graph_vectors)
+
     return graphs_vector_mtx
+
+def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, attribute_key=None, degree_threshold=None):
+    """
+    Encodes a list of graphs into a sparse matrix of feature vectors.
+
+    Args:
+        graphs (list of networkx.Graph): The list of graphs to encode.
+        radius (int): The radius for rooted graph hashing.
+        distance (int): The distance parameter for paired hashing.
+        connector (int): Connector thickness.
+        nbits (int): Number of bits for hashing.
+        parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
+        attribute_key (str, optional): Node attribute key to use for additional features.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
+
+    Returns:
+        scipy.sparse.csr_matrix: The sparse matrix where each row is a graph's feature vector.
+    """
+    # Determine the number of available CPUs
+    n_cpus = mp.cpu_count()
+
+    if parallel and len(graphs) > n_cpus:
+        def process_subset(subset):
+            """
+            Processes a subset of graphs by encoding each graph sequentially.
+
+            Args:
+                subset (list of networkx.Graph): A subset of graphs to encode.
+
+            Returns:
+                list of scipy.sparse.csr_matrix: Encoded feature vectors for the subset.
+            """
+            return [
+                node_graph_vector(graph, radius, distance, connector, nbits, attribute_key, degree_threshold)
+                for graph in subset
+            ]
+
+        
+        # Split the list of graphs into 'n_cpus' roughly equal subsets
+        subsets = split_into_chunks(graphs, n_cpus)
+
+        # Create a pool of worker processes
+        with mp.Pool(n_cpus) as pool:
+            # Encode graphs in parallel by processing each subset
+            graph_vectors_subsets = pool.map(process_subset, subsets)
+
+        # Flatten the list of lists into a single list of graph vectors
+        graph_vectors = [vec for subset in graph_vectors_subsets for vec in subset]
+    else:
+        # Encode graphs sequentially
+        graph_vectors = [
+            node_graph_vector(graph, radius, distance, connector, nbits, attribute_key, degree_threshold)
+            for graph in graphs
+        ]
+
+    # Stack all graph vectors vertically into a single sparse matrix
+    graphs_vector_mtx = sp.sparse.vstack(graph_vectors)
+
+    return graphs_vector_mtx
+
 
 def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, attribute_key=None, degree_threshold=None):
     """
@@ -414,40 +527,43 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
     Returns:
         list of scipy.sparse.csr_matrix: A list where each element is a matrix of node vectors for a graph.
     """
-    if parallel:
-        # Define a helper function for parallel processing
-        def func(graph): 
-            return node_vector(graph, radius, distance, connector, nbits, attribute_key, degree_threshold)
-        
-        # Get the number of available CPUs
-        n_cpus = mp.cpu_count()
+    # Determine the number of available CPUs
+    n_cpus = mp.cpu_count()
+
+    if parallel and len(graphs) > n_cpus:
+        def process_subset(subset):
+            """
+            Processes a subset of graphs by encoding each graph's nodes sequentially.
+
+            Args:
+                subset (list of networkx.Graph): A subset of graphs to encode.
+
+            Returns:
+                list of scipy.sparse.csr_matrix: Encoded node feature matrices for the subset.
+            """
+            return [
+                node_vector(graph, radius, distance, connector, nbits, attribute_key, degree_threshold)
+                for graph in subset
+            ]
+
+        # Split the list of graphs into 'n_cpus' roughly equal subsets
+        subsets = split_into_chunks(graphs, n_cpus)
+
         # Create a pool of worker processes
-        pool = mp.Pool(n_cpus)
-        # Encode graphs in parallel
-        graph_node_vectors = pool.map(func, graphs)
-        # Close the pool after processing
-        pool.close()
+        with mp.Pool(n_cpus) as pool:
+            # Encode graphs in parallel by processing each subset
+            graph_node_vectors_subsets = pool.map(process_subset, subsets)
+
+        # Flatten the list of lists into a single list of graph node vectors
+        graph_node_vectors = [vec for subset in graph_node_vectors_subsets for vec in subset]
     else:
         # Encode graphs sequentially
         graph_node_vectors = [
             node_vector(graph, radius, distance, connector, nbits, attribute_key, degree_threshold)
             for graph in graphs
         ]
+
     return graph_node_vectors
-
-
-# Import necessary modules and libraries
-from sklearn.base import BaseEstimator, TransformerMixin  # Import scikit-learn base classes
-from sklearn.cluster import KMeans
-from sklearn.ensemble import ExtraTreesClassifier
-from sklearn.decomposition import TruncatedSVD
-import numpy as np
-import scipy as sp
-from scipy.sparse import csr_matrix
-import multiprocessing_on_dill as mp  # For parallel processing with support for more object types
-import networkx as nx  # For graph operations
-from collections import Counter, defaultdict  # For counting elements and creating dictionaries with default types
-from copy import copy  # For copying objects
 
 class AbstractNSPPK(BaseEstimator, TransformerMixin):
     """
@@ -474,7 +590,7 @@ class AbstractNSPPK(BaseEstimator, TransformerMixin):
     """
     def __init__(self, embedder=None, clustering_predictor=None, classifier=None, radius=1, distance=3, connector=0,
                  nbits=10, degree_threshold=None, dense=True, parallel=True,
-                 attribute_key=None, attribute_dim=None, attribute_alphabet_size=None):
+                 attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, use_node_kernel=False):
         self.embedder = embedder
         self.clustering_predictor = clustering_predictor
         self.classifier = classifier
@@ -488,6 +604,7 @@ class AbstractNSPPK(BaseEstimator, TransformerMixin):
         self.attribute_key = attribute_key
         self.attribute_dim = attribute_dim
         self.attribute_alphabet_size = attribute_alphabet_size
+        self.use_node_kernel = use_node_kernel
 
     def __repr__(self):
         """
@@ -620,17 +737,31 @@ class AbstractNSPPK(BaseEstimator, TransformerMixin):
         if self.attribute_key is not None and self.attribute_alphabet_size is not None:
             graphs = self.set_discrete_labels(graphs)
 
-        # Encode the graphs into a sparse feature matrix using the encoder function
-        data_mtx = paired_graphs_vector_encoder(
-            graphs, 
-            self.radius, 
-            self.distance, 
-            self.connector, 
-            self.nbits,
-            self.parallel, 
-            self.attribute_key,
-            self.degree_threshold
-        )
+        if self.use_node_kernel:
+            # Encode the graphs into a sparse feature matrix using the encoder function
+            data_mtx = paired_node_graphs_vector_encoder(
+                graphs, 
+                self.radius, 
+                self.distance, 
+                self.connector, 
+                self.nbits,
+                self.parallel, 
+                self.attribute_key,
+                self.degree_threshold
+            )
+
+        else:
+            # Encode the graphs into a sparse feature matrix using the encoder function
+            data_mtx = paired_graphs_vector_encoder(
+                graphs, 
+                self.radius, 
+                self.distance, 
+                self.connector, 
+                self.nbits,
+                self.parallel, 
+                self.attribute_key,
+                self.degree_threshold
+            )
 
         # Convert the feature matrix to dense format if specified
         if self.dense:
@@ -638,8 +769,7 @@ class AbstractNSPPK(BaseEstimator, TransformerMixin):
 
         return data_mtx
 
-
-class NSPPK(AbstractNSPPK):
+class NSPPK(BaseEstimator, TransformerMixin):
     """
     NSPPK (Neighborhood Subgraph Pairwise Propagation Kernel) class specialized from AbstractNSPPK.
     
@@ -689,8 +819,8 @@ class NSPPK(AbstractNSPPK):
             n_jobs=-1 if parallel else None
         ) if attribute_alphabet_size else None
 
-        # Initialize the superclass (AbstractNSPPK) with the specific components and parameters
-        super().__init__(
+        # Create an instance of AbstractNSPPK with the specified components and parameters
+        self.abstract_nsppk = AbstractNSPPK(
             embedder=embedder,
             clustering_predictor=clustering_predictor,
             classifier=classifier,
@@ -706,49 +836,111 @@ class NSPPK(AbstractNSPPK):
             attribute_alphabet_size=attribute_alphabet_size
         )
 
+    def __repr__(self):
+        """
+        Returns a string representation of the NSPPK instance.
+        
+        Returns:
+            str: The string representation.
+        """
+        return f"{self.__class__.__name__}({self.abstract_nsppk})"
 
-    # The fit_transform method is inherited from TransformerMixin,
-    # which uses the fit and transform methods defined above.
+    def fit(self, graphs, targets=None):
+        """
+        Fit the NSPPK encoder on the given graphs by delegating to AbstractNSPPK.
+        
+        Args:
+            graphs (list of networkx.Graph): The input graphs to fit on.
+            targets (array-like, optional): Target values (unused).
+        
+        Returns:
+            self: The instance itself.
+        """
+        self.abstract_nsppk.fit(graphs, targets)
+        return self
+
+    def transform(self, graphs):
+        """
+        Transform the input graphs into feature vectors by delegating to AbstractNSPPK.
+        
+        Args:
+            graphs (list of networkx.Graph): The list of graphs to transform.
+        
+        Returns:
+            numpy.ndarray or scipy.sparse.csr_matrix: The feature matrix.
+        """
+        return self.abstract_nsppk.transform(graphs)
+
+    def fit_transform(self, graphs, targets=None):
+        """
+        Fit the encoder and transform the graphs in a single step.
+        
+        Args:
+            graphs (list of networkx.Graph): The input graphs to fit and transform.
+            targets (array-like, optional): Target values (unused).
+        
+        Returns:
+            numpy.ndarray or scipy.sparse.csr_matrix: The feature matrix.
+        """
+        self.fit(graphs, targets)
+        return self.transform(graphs)
 
 
-class NodeNSPPK(NSPPK):
+class NodeGraphNSPPK(BaseEstimator, TransformerMixin):
     """
-    NodeNSPPK (Node Neighborhood Subgraph Pairwise Propagation Kernel) class compatible with scikit-learn's Transformer interface.
-
-    Inherits from NSPPK and specializes the transformation process to generate node-level feature vectors suitable for
-    node-level machine learning models. It captures both local (node-level) and structural (subgraph-level) information
-    by hashing node labels and the structure of their neighborhoods. Additionally, it supports dimensionality reduction
-    of node attributes using Singular Value Decomposition (SVD).
-
+    NSPPK (Neighborhood Subgraph Pairwise Propagation Kernel) class specialized from AbstractNSPPK.
+    
+    This class encodes graphs into feature vectors suitable for machine learning models by capturing both
+    local (node-level) and structural (subgraph-level) information. It specializes the AbstractNSPPK by
+    initializing it with specific components: TruncatedSVD for embedding, KMeans for clustering, and 
+    ExtraTreesClassifier for classification.
+    
     Parameters:
         radius (int, default=1): The radius for rooted graph hashing.
         distance (int, default=3): The distance parameter for paired hashing.
         connector (int, default=0): Connector thickness.
         nbits (int, default=10): Number of bits for hashing.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
         dense (bool, default=True): Whether to convert the feature matrix to a dense format.
         parallel (bool, default=True): Whether to encode graphs in parallel.
         attribute_key (str, optional): Node attribute key to use for additional features.
-        attribute_dim (int, optional): The target dimensionality for attribute vectors; if set, applies SVD for dimensionality reduction.
+        attribute_dim (int, optional): Dimension of the attribute vector. If not None, performs SVD for dimensionality reduction to this dimension.
         attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes.
     """
     def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, 
                  attribute_key=None, attribute_dim=None, attribute_alphabet_size=None):
         """
-        Initialize the NodeNSPPK encoder with the specified parameters.
-
+        Initializes the NSPPK encoder with specific components: TruncatedSVD, KMeans, and ExtraTreesClassifier.
+        
         Args:
             radius (int, optional): The radius for rooted graph hashing. Defaults to 1.
             distance (int, optional): The distance parameter for paired hashing. Defaults to 3.
             connector (int, optional): Connector thickness. Defaults to 0.
             nbits (int, optional): Number of bits for hashing. Defaults to 10.
+            degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
             dense (bool, optional): Whether to convert the feature matrix to a dense format. Defaults to True.
             parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
             attribute_key (str, optional): Node attribute key to use for additional features.
-            attribute_dim (int, optional): The target dimensionality for attribute vectors; if set, applies SVD for dimensionality reduction. Defaults to None.
+            attribute_dim (int, optional): Dimension of the attribute vector. If not None, performs SVD for dimensionality reduction to this dimension. Defaults to None.
             attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes. Defaults to None.
         """
-        # Initialize the superclass (NSPPK) with the provided parameters
-        super().__init__(
+        # Initialize the embedder if attribute_dim is specified
+        embedder = TruncatedSVD(n_components=attribute_dim) if attribute_dim else None
+
+        # Initialize the clustering predictor if attribute_alphabet_size is specified
+        clustering_predictor = KMeans(n_clusters=attribute_alphabet_size) if attribute_alphabet_size else None
+
+        # Initialize the classifier if attribute_alphabet_size is specified
+        classifier = ExtraTreesClassifier(
+            n_estimators=300, 
+            n_jobs=-1 if parallel else None
+        ) if attribute_alphabet_size else None
+
+        # Create an instance of AbstractNSPPK with the specified components and parameters
+        self.abstract_nsppk = AbstractNSPPK(
+            embedder=embedder,
+            clustering_predictor=clustering_predictor,
+            classifier=classifier,
             radius=radius,
             distance=distance,
             connector=connector,
@@ -761,45 +953,107 @@ class NodeNSPPK(NSPPK):
             attribute_alphabet_size=attribute_alphabet_size
         )
 
+    def __repr__(self):
+        """
+        Returns a string representation of the NSPPK instance.
+        
+        Returns:
+            str: The string representation.
+        """
+        return f"{self.__class__.__name__}({self.abstract_nsppk})"
+
+    def fit(self, graphs, targets=None):
+        """
+        Fit the NSPPK encoder on the given graphs by delegating to AbstractNSPPK.
+        
+        Args:
+            graphs (list of networkx.Graph): The input graphs to fit on.
+            targets (array-like, optional): Target values (unused).
+        
+        Returns:
+            self: The instance itself.
+        """
+        self.abstract_nsppk.fit(graphs, targets)
+        return self
+
     def transform(self, graphs):
         """
-        Transform input graphs into node-level feature vectors.
-
-        This method encodes each graph into a list of node feature matrices, where each matrix corresponds to a graph
-        and contains feature vectors for its nodes. If `attribute_dim` is specified, it applies SVD to reduce the
-        dimensionality of node attributes before encoding. Additionally, if `attribute_alphabet_size` is specified,
-        it assigns discrete labels to nodes based on clustered attributes.
-
+        Transform the input graphs into feature vectors by delegating to AbstractNSPPK.
+        
         Args:
             graphs (list of networkx.Graph): The list of graphs to transform.
-
+        
         Returns:
-            list of numpy.ndarray or scipy.sparse.csr_matrix: A list where each element is a node feature matrix for a graph.
+            numpy.ndarray or scipy.sparse.csr_matrix: The feature matrix.
         """
-        # If attribute dimensionality reduction is specified, apply embedding
-        if self.attribute_key and self.attribute_dim:
-            graphs = self.embed_attributes(graphs)
-        # If attribute clustering is specified, assign discrete labels to nodes
-        if self.attribute_key is not None and self.attribute_alphabet_size is not None:
-            graphs = self.set_discrete_labels(graphs)
+        return self.abstract_nsppk.transform(graphs)
 
-        # Encode the graphs into node feature vectors using the node-specific encoder function
-        nodes_data_mtx_list = paired_node_vector_encoder(
-            graphs,
-            self.radius,
-            self.distance,
-            self.connector,
-            self.nbits,
-            self.parallel,
-            self.attribute_key,
-            self.degree_threshold
+    def fit_transform(self, graphs, targets=None):
+        """
+        Fit the encoder and transform the graphs in a single step.
+        
+        Args:
+            graphs (list of networkx.Graph): The input graphs to fit and transform.
+            targets (array-like, optional): Target values (unused).
+        
+        Returns:
+            numpy.ndarray or scipy.sparse.csr_matrix: The feature matrix.
+        """
+        self.fit(graphs, targets)
+        return self.transform(graphs)
+
+
+class NodeNSPPK(BaseEstimator, TransformerMixin):
+    """
+    NodeNSPPK (Node Neighborhood Subgraph Pairwise Propagation Kernel) class compatible with scikit-learn's Transformer interface.
+
+    This class encodes graphs into node-level feature vectors suitable for
+    node-level machine learning models. It captures both local (node-level) and structural (subgraph-level) information
+    by hashing node labels and the structure of their neighborhoods. Additionally, it supports dimensionality reduction
+    of node attributes using Singular Value Decomposition (SVD).
+    
+    Parameters:
+        radius (int, default=1): The radius for rooted graph hashing.
+        distance (int, default=3): The distance parameter for paired hashing.
+        connector (int, default=0): Connector thickness.
+        nbits (int, default=10): Number of bits for hashing.
+        degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
+        dense (bool, default=True): Whether to convert the feature matrix to a dense format.
+        parallel (bool, default=True): Whether to encode graphs in parallel.
+        attribute_key (str, optional): Node attribute key to use for additional features.
+        attribute_dim (int, optional): The target dimensionality for attribute vectors; if set, applies SVD for dimensionality reduction.
+        attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes.
+    """
+    def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, 
+                 attribute_key=None, attribute_dim=None, attribute_alphabet_size=None):
+        """
+        Initialize the NodeNSPPK encoder with the specified parameters.
+        
+        Args:
+            radius (int, optional): The radius for rooted graph hashing. Defaults to 1.
+            distance (int, optional): The distance parameter for paired hashing. Defaults to 3.
+            connector (int, optional): Connector thickness. Defaults to 0.
+            nbits (int, optional): Number of bits for hashing. Defaults to 10.
+            degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
+            dense (bool, optional): Whether to convert the feature matrix to a dense format. Defaults to True.
+            parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
+            attribute_key (str, optional): Node attribute key to use for additional features.
+            attribute_dim (int, optional): The target dimensionality for attribute vectors; if set, applies SVD for dimensionality reduction. Defaults to None.
+            attribute_alphabet_size (int, optional): Number of clusters for discretizing node attributes. Defaults to None.
+        """
+        # Initialize an NSPPK instance with the provided parameters
+        self.nsp_pk = NSPPK(
+            radius=radius,
+            distance=distance,
+            connector=connector,
+            nbits=nbits,
+            degree_threshold=degree_threshold,
+            dense=dense,
+            parallel=parallel,
+            attribute_key=attribute_key,
+            attribute_dim=attribute_dim,
+            attribute_alphabet_size=attribute_alphabet_size
         )
-
-        # Convert each node feature matrix to dense format if specified
-        if self.dense:
-            nodes_data_mtx_list = [mtx.todense().A for mtx in nodes_data_mtx_list]
-
-        return nodes_data_mtx_list
 
     def __repr__(self):
         """
@@ -808,8 +1062,72 @@ class NodeNSPPK(NSPPK):
         Returns:
             str: The string representation of the object.
         """
-        # Reuse the NSPPK __repr__ method for consistency
-        return super().__repr__()
+        return f"{self.__class__.__name__}({self.nsp_pk})"
 
-    # The fit_transform method is inherited from TransformerMixin,
-    # which uses the fit and transform methods defined above.
+    def fit(self, graphs, targets=None):
+        """
+        Fit the NodeNSPPK encoder on the given graphs by delegating to NSPPK.
+        
+        Args:
+            graphs (list of networkx.Graph): The input graphs to fit on.
+            targets (array-like, optional): Target values (unused).
+        
+        Returns:
+            self: The instance itself.
+        """
+        self.nsp_pk.fit(graphs, targets)
+        return self
+
+    def transform(self, graphs):
+        """
+        Transform the input graphs into node-level feature vectors.
+        
+        This method encodes each graph into a list of node feature matrices, where each matrix corresponds to a graph
+        and contains feature vectors for its nodes. If `attribute_dim` is specified, it applies SVD to reduce the
+        dimensionality of node attributes before encoding. Additionally, if `attribute_alphabet_size` is specified,
+        it assigns discrete labels to nodes based on clustered attributes.
+        
+        Args:
+            graphs (list of networkx.Graph): The list of graphs to transform.
+        
+        Returns:
+            list of numpy.ndarray or list of scipy.sparse.csr_matrix: A list where each element is a node feature matrix for a graph.
+        """
+        # If attribute dimensionality reduction is specified, apply embedding
+        if self.nsp_pk.abstract_nsppk.attribute_key is not None and self.nsp_pk.abstract_nsppk.attribute_dim is not None:
+            graphs = self.nsp_pk.abstract_nsppk.embed_attributes(graphs)
+        # If attribute clustering is specified, assign discrete labels to nodes
+        if self.nsp_pk.abstract_nsppk.attribute_key is not None and self.nsp_pk.abstract_nsppk.attribute_alphabet_size is not None:
+            graphs = self.nsp_pk.abstract_nsppk.set_discrete_labels(graphs)
+
+        # Encode the graphs into node feature vectors using the node-specific encoder function
+        nodes_data_mtx_list = paired_node_vector_encoder(
+            graphs,
+            self.nsp_pk.abstract_nsppk.radius,
+            self.nsp_pk.abstract_nsppk.distance,
+            self.nsp_pk.abstract_nsppk.connector,
+            self.nsp_pk.abstract_nsppk.nbits,
+            self.nsp_pk.abstract_nsppk.parallel,
+            self.nsp_pk.abstract_nsppk.attribute_key,
+            self.nsp_pk.abstract_nsppk.degree_threshold
+        )
+
+        # Convert each node feature matrix to dense format if specified
+        if self.nsp_pk.abstract_nsppk.dense:
+            nodes_data_mtx_list = [mtx.todense().A for mtx in nodes_data_mtx_list]
+
+        return nodes_data_mtx_list
+
+    def fit_transform(self, graphs, targets=None):
+        """
+        Fit the encoder and transform the graphs in a single step by delegating to NSPPK.
+        
+        Args:
+            graphs (list of networkx.Graph): The input graphs to fit and transform.
+            targets (array-like, optional): Target values (unused).
+        
+        Returns:
+            list of numpy.ndarray or list of scipy.sparse.csr_matrix: A list where each element is a node feature matrix for a graph.
+        """
+        self.fit(graphs, targets)
+        return self.transform(graphs)
