@@ -13,7 +13,9 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cluster import KMeans
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.decomposition import TruncatedSVD
-
+# Import necessary modules for data splitting and model training
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import ExtraTreesClassifier
 
 def hash_list(seq):
     """
@@ -956,3 +958,153 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
         """
         self.fit(graphs, targets)
         return self.transform(graphs)
+
+
+class ImportanceNSPPK(object):
+    """
+    A class to visualize node importance in graphs using feature importance derived from an ensemble classifier.
+
+    This class leverages the NSPPK (Neighborhood Subgraph Pairwise Path Kernel) method
+    to decompose graphs into substructures and vectorize them. It then uses an ExtraTreesClassifier
+    to compute feature importances, which are used to assign importance weights to nodes in the graphs.
+
+    Attributes:
+        node_nsppk (object): An instance of NSPPK or a similar class responsible for graph decomposition and vectorization.
+        importance_key (str): The key under which node importance weights will be stored in the graph's node attributes.
+        n_iter (int): Number of iterations for training the classifier to ensure stable feature importance estimates.
+        n_estimators (int): Number of trees in the ExtraTreesClassifier.
+        quantile (float): Quantile threshold for filtering out low-importance features.
+        parallel (bool): Whether to utilize parallel processing during classifier training.
+        feature_importance_vector (np.ndarray): Normalized feature importance scores after processing.
+    """
+    
+    def __init__(self, node_nsppk, importance_key='att', n_iter=10, n_estimators=100, quantile=0.5, parallel=True):
+        """
+        Initializes the ImportanceNSPPK instance with specified parameters.
+
+        Args:
+            node_nsppk (object): An instance responsible for graph decomposition and vectorization (e.g., NSPPK).
+            importance_key (str, optional): The key for storing node importance in graph attributes. Defaults to 'att'.
+            n_iter (int, optional): Number of iterations for classifier training. Defaults to 10.
+            n_estimators (int, optional): Number of trees in the ExtraTreesClassifier. Defaults to 100.
+            quantile (float, optional): Quantile threshold for filtering feature importances. Defaults to 0.5.
+            parallel (bool, optional): Whether to run classifier training in parallel. Defaults to True.
+        """
+        self.node_nsppk = node_nsppk
+        self.importance_key = importance_key
+        self.n_iter = n_iter
+        self.n_estimators = n_estimators
+        self.quantile = quantile
+        self.parallel = parallel
+        self.feature_importance_vector = None  # To store the computed normalized feature importance scores
+
+    def fit(self, graphs, targets=None):
+        """
+        Fits the model by computing feature importances from the provided graphs and corresponding target labels.
+
+        This method vectorizes the input graphs, aggregates node features, and trains an ExtraTreesClassifier
+        multiple times to obtain stable estimates of feature importances. It then processes these importances
+        by averaging, subtracting the standard deviation, thresholding, and normalizing.
+
+        Args:
+            graphs (list): A list of graph objects to be vectorized and used for training.
+            targets (array-like, optional): Target labels corresponding to each graph. Required for supervised training.
+
+        Returns:
+            self: Returns the instance itself to allow method chaining.
+        """
+        # Vectorize the graphs using the provided NSPPK instance
+        node_feature_mtx_list = self.node_nsppk.fit_transform(graphs)
+        
+        # Aggregate node features for each graph by summing across nodes
+        X = np.vstack([node_feature_mtx.sum(axis=0) for node_feature_mtx in node_feature_mtx_list])
+
+        feature_importances = []  # List to store feature importances from each iteration
+
+        # Perform multiple iterations to compute stable feature importances
+        for it in range(self.n_iter):
+            # Split the data into training and testing sets with a fixed random state for reproducibility
+            train_X, test_X, train_targets, test_targets = train_test_split(
+                X, targets, train_size=0.7, random_state=it+1
+            )
+            
+            # Initialize and train the ExtraTreesClassifier
+            clf = ExtraTreesClassifier(
+                n_estimators=self.n_estimators, 
+                n_jobs=-1 if self.parallel else None,
+                random_state=it+1  # Ensure reproducibility across iterations
+            ).fit(train_X, train_targets)
+            
+            # Append the feature importances from the trained classifier
+            feature_importances.append(clf.feature_importances_)
+        
+        # Convert the list of feature importances into a NumPy matrix for statistical processing
+        feature_importances_mtx = np.vstack(feature_importances)
+        
+        # Compute the mean and standard deviation of feature importances across all iterations
+        mean_importances = np.mean(feature_importances_mtx, axis=0)
+        std_importances = np.std(feature_importances_mtx, axis=0)
+        
+        # Calculate the adjusted feature importance by subtracting the standard deviation from the mean
+        adjusted_importances = mean_importances - std_importances
+        
+        # Set any negative importance values to zero to ensure non-negativity
+        adjusted_importances[adjusted_importances < 0] = 0
+        
+        # Apply a quantile threshold to filter out features with low importance
+        threshold = np.quantile(adjusted_importances, self.quantile)
+        adjusted_importances[adjusted_importances < threshold] = 0
+        
+        # Normalize the feature importance vector by dividing by its maximum value to scale between 0 and 1
+        max_importance = np.max(adjusted_importances)
+        if max_importance > 0:
+            self.feature_importance_vector = adjusted_importances / max_importance
+        else:
+            self.feature_importance_vector = adjusted_importances  # Remain zero if max is zero
+        
+        return self  # Allow method chaining
+
+    def transform(self, graphs):
+        """
+        Transforms the input graphs by assigning normalized importance weights to each node based on feature importances.
+
+        This method vectorizes the nodes of each graph, computes weights by combining node features with the
+        precomputed feature importance vector, and normalizes these weights to assign importance scores to nodes.
+        Additionally, edge weights are assigned based on the product of the connected nodes' importance scores.
+
+        Args:
+            graphs (list): A list of graph objects to be transformed with node and edge importance weights.
+
+        Returns:
+            out_graphs (list): A list of transformed graph objects with updated node and edge importance attributes.
+        """
+        # Vectorize the nodes of the graphs using the provided NSPPK instance
+        node_feature_mtx_list = self.node_nsppk.transform(graphs)
+        
+        out_graphs = []  # List to store the transformed graphs
+
+        # Iterate over each graph and its corresponding node feature matrix
+        for graph, node_feature_mtx in zip(graphs, node_feature_mtx_list):
+            out_graph = graph.copy()  # Create a copy of the graph to avoid modifying the original
+            
+            # Compute the weights by multiplying node features with the feature importance vector
+            weights = node_feature_mtx * self.feature_importance_vector
+            
+            # Sum the weights across all feature dimensions for each node to obtain a single weight per node
+            weights = np.sum(weights, axis=1)
+            
+            # Normalize the weights by the maximum weight to scale between 0 and 1
+            max_weight = np.max(weights) if np.max(weights) > 0 else 1
+            normalized_weights = weights / max_weight
+            
+            # Assign the normalized weight to each node in the graph
+            for i, weight in enumerate(normalized_weights):
+                out_graph.nodes[i][self.importance_key] = weight
+            
+            # Assign edge weights based on the product of the connected nodes' importance scores
+            for u, v in out_graph.edges():
+                out_graph.edges[u, v][self.importance_key] = out_graph.nodes[u][self.importance_key] * out_graph.nodes[v][self.importance_key]
+        
+            out_graphs.append(out_graph)  # Add the transformed graph to the output list
+        
+        return out_graphs  # Return the list of transformed graphs
