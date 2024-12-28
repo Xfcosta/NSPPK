@@ -287,8 +287,12 @@ def node_graph_vector(original_graph, radius, distance, connector, nbits, weight
     Returns:
         scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
     """
-    node_vectors_mtx = node_vector(original_graph, radius, distance, connector, nbits, weight_key, attribute_key, degree_threshold)
-    vector = node_vectors_mtx.sum(axis=0).reshape(1, -1)
+    node_vectors_mtx = structural_node_vectors(original_graph, radius, distance, connector, nbits, degree_threshold)
+    node_vectors_mtx = node_vectors_mtx.todense().A
+    attribute_node_vectors_mtx = node_vector(original_graph, radius, distance, connector, nbits, weight_key, attribute_key, degree_threshold)
+    vector_ = attribute_node_vectors_mtx.T.dot(node_vectors_mtx)
+    vector = vector_.reshape(1, -1)
+    vector = csr_matrix(vector)
     return csr_matrix(vector)
 
 
@@ -732,20 +736,6 @@ class NSPPK(BaseEstimator, TransformerMixin):
         """
         return self.abstract_nsppk.transform(graphs)
 
-    def fit_transform(self, graphs, targets=None):
-        """
-        Fit the encoder and transform the graphs in a single step.
-
-        Args:
-            graphs (list of networkx.Graph): The input graphs to fit and transform.
-            targets (array-like, optional): Target values (unused).
-
-        Returns:
-            numpy.ndarray or scipy.sparse.csr_matrix: The feature matrix.
-        """
-        self.fit(graphs, targets)
-        return self.transform(graphs)
-
 
 class NodeGraphNSPPK(BaseEstimator, TransformerMixin):
     """
@@ -793,7 +783,8 @@ class NodeGraphNSPPK(BaseEstimator, TransformerMixin):
             weight_key=weight_key,
             attribute_key=attribute_key,
             attribute_dim=attribute_dim,
-            attribute_alphabet_size=attribute_alphabet_size
+            attribute_alphabet_size=attribute_alphabet_size,
+            use_node_kernel=True
         )
 
     def __repr__(self):
@@ -830,20 +821,6 @@ class NodeGraphNSPPK(BaseEstimator, TransformerMixin):
             numpy.ndarray or scipy.sparse.csr_matrix: The feature matrix.
         """
         return self.abstract_nsppk.transform(graphs)
-
-    def fit_transform(self, graphs, targets=None):
-        """
-        Fit the encoder and transform the graphs in a single step.
-
-        Args:
-            graphs (list of networkx.Graph): The input graphs to fit and transform.
-            targets (array-like, optional): Target values (unused).
-
-        Returns:
-            numpy.ndarray or scipy.sparse.csr_matrix: The feature matrix.
-        """
-        self.fit(graphs, targets)
-        return self.transform(graphs)
 
 
 class NodeNSPPK(BaseEstimator, TransformerMixin):
@@ -945,20 +922,6 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
 
         return nodes_data_mtx_list
 
-    def fit_transform(self, graphs, targets=None):
-        """
-        Fit the encoder and transform the graphs in a single step by delegating to NSPPK.
-
-        Args:
-            graphs (list of networkx.Graph): The input graphs to fit and transform.
-            targets (array-like, optional): Target values (unused).
-
-        Returns:
-            list of numpy.ndarray or list of scipy.sparse.csr_matrix: A list where each element is a node feature matrix for a graph.
-        """
-        self.fit(graphs, targets)
-        return self.transform(graphs)
-
 
 class ImportanceNSPPK(object):
     """
@@ -975,10 +938,11 @@ class ImportanceNSPPK(object):
         n_estimators (int): Number of trees in the ExtraTreesClassifier.
         quantile (float): Quantile threshold for filtering out low-importance features.
         parallel (bool): Whether to utilize parallel processing during classifier training.
+        normalize (bool): Whether to normalize node and edge weights to [0,1] range.
         feature_importance_vector (np.ndarray): Normalized feature importance scores after processing.
     """
     
-    def __init__(self, node_nsppk, importance_key='att', n_iter=10, n_estimators=100, quantile=0.5, parallel=True):
+    def __init__(self, node_nsppk, importance_key='att', n_iter=10, n_estimators=100, quantile=0.5, parallel=True, normalize=True):
         """
         Initializes the ImportanceNSPPK instance with specified parameters.
 
@@ -989,6 +953,7 @@ class ImportanceNSPPK(object):
             n_estimators (int, optional): Number of trees in the ExtraTreesClassifier. Defaults to 100.
             quantile (float, optional): Quantile threshold for filtering feature importances. Defaults to 0.5.
             parallel (bool, optional): Whether to run classifier training in parallel. Defaults to True.
+            normalize (bool, optional): Whether to normalize weights to [0,1]. Defaults to True.
         """
         self.node_nsppk = node_nsppk
         self.importance_key = importance_key
@@ -996,6 +961,7 @@ class ImportanceNSPPK(object):
         self.n_estimators = n_estimators
         self.quantile = quantile
         self.parallel = parallel
+        self.normalize = normalize
         self.feature_importance_vector = None  # To store the computed normalized feature importance scores
 
     def fit(self, graphs, targets=None):
@@ -1093,9 +1059,12 @@ class ImportanceNSPPK(object):
             # Sum the weights across all feature dimensions for each node to obtain a single weight per node
             weights = np.sum(weights, axis=1)
             
-            # Normalize the weights by the maximum weight to scale between 0 and 1
-            max_weight = np.max(weights) if np.max(weights) > 0 else 1
-            normalized_weights = weights / max_weight
+            if self.normalize:
+                # Normalize the weights by the maximum weight to scale between 0 and 1
+                max_weight = np.max(weights) if np.max(weights) > 0 else 1
+                normalized_weights = weights / max_weight
+            else:
+                normalized_weights = weights
             
             # Assign the normalized weight to each node in the graph
             for i, weight in enumerate(normalized_weights):
