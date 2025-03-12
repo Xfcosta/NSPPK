@@ -156,7 +156,7 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
     accumulator.add(0, 1.0)
     accumulator.add(1, graph.degree[node_idx])
 
-def get_structural_node_vectors(original_graph, radius, distance, connector, nbits, sigma=None, degree_threshold=None):
+def get_structural_node_vectors(original_graph, radius, distance, connector, nbits, degree_threshold=None, sigma=None):
     """
     Generates a feature vector for each node in the graph.
     Uses an unweighted (faster) version if sigma is None, in which the weight is inlined as 1.0.
@@ -185,7 +185,7 @@ def get_structural_node_vectors(original_graph, radius, distance, connector, nbi
         convert_func = items_to_sparse_histogram
         for node_idx in graph.nodes():
             accumulator = accumulator_class()
-            _process_node_features(node_idx, graph, distance, connector, nbits, accumulator)
+            _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator)
             node_vector = convert_func(accumulator.get(), nbits)
             node_vectors.append(node_vector)
     else:
