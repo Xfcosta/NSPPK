@@ -93,6 +93,8 @@ def precompute_edge_triplet_hashes(graph):
         graph.edges[u, v]['triplet_hash'] = edge_triplet_hash(u, v, graph)
 
 def gaussian_weight(dist, sigma):
+    if sigma is None:
+        return 1.0
     return np.exp(- (dist ** 2) / (sigma ** 2))
 
 # ------------------------
@@ -116,51 +118,7 @@ class DictAccumulator:
     def get(self):
         return self.data
 
-# ------------------------
-# Helper Functions for Processing Node Features
-# ------------------------
-
-def _process_node_features_unweighted(node_idx, graph, distance, connector, nbits, accumulator):
-    # Unweighted: inline weight = 1.0 without extra function calls.
-    node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=distance)
-    dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
-    
-    for target_node, dist in node_idxs_to_dist_dict.items():
-        w = 1.0  # Inline constant weight
-        for neighbor in graph.neighbors(target_node):
-            triplet_hash = graph.edges[target_node, neighbor].get('triplet_hash', None)
-            if triplet_hash is not None:
-                distance_triplet_hash = hash_value(hash_sequence([dist, triplet_hash]), nbits=nbits)
-                accumulator.add(distance_triplet_hash, w)
-
-    for code_i in graph.nodes[node_idx]['rooted_graph_hash']:
-        for dist, node_idxs in sorted(dist_to_node_idxs_dict.items()):
-            w = 1.0  # Inline constant weight
-            for curr_node_idx in node_idxs:
-                if connector > 0:
-                    union_of_shortest_paths = set()
-                    shortest_paths = list(nx.all_shortest_paths(graph, source=node_idx, target=curr_node_idx))
-                    for path in shortest_paths:
-                        union_of_shortest_paths.update(path)
-                for connect in range(connector + 1):
-                    for code_j in graph.nodes[curr_node_idx]['rooted_graph_hash']:
-                        if connect == 0:
-                            paired_code = hash_sequence([code_i, dist, code_j])
-                        else:
-                            union_of_shortest_paths_code = hash_sequence(
-                                sorted([
-                                    hash_sequence([node_idxs_to_dist_dict[node], graph.nodes[node]['rooted_graph_hash'][connect - 1]])
-                                    for node in union_of_shortest_paths
-                                ])
-                            )
-                            paired_code = hash_sequence([code_i, dist, code_j, union_of_shortest_paths_code])
-                        paired_code = hash_value(paired_code, nbits=nbits)
-                        accumulator.add(paired_code, w)
-    # Add special tokens (degree info) unweighted.
-    accumulator.add(0, 1.0)
-    accumulator.add(1, graph.degree[node_idx])
-
-def _process_node_features_weighted(node_idx, graph, distance, connector, nbits, sigma, accumulator):
+def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator):
     # Weighted: inline computation of weight using the Gaussian function.
     node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=distance)
     dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
@@ -187,22 +145,16 @@ def _process_node_features_weighted(node_idx, graph, distance, connector, nbits,
                         if connect == 0:
                             paired_code = hash_sequence([code_i, dist, code_j])
                         else:
-                            union_of_shortest_paths_code = hash_sequence(
-                                sorted([
+                            union_of_shortest_paths_code = hash_set([
                                     hash_sequence([node_idxs_to_dist_dict[node], graph.nodes[node]['rooted_graph_hash'][connect - 1]])
                                     for node in union_of_shortest_paths
                                 ])
-                            )
                             paired_code = hash_sequence([code_i, dist, code_j, union_of_shortest_paths_code])
                         paired_code = hash_value(paired_code, nbits=nbits)
                         accumulator.add(paired_code, w)
     # Add special tokens (degree info) with weight.
     accumulator.add(0, 1.0)
     accumulator.add(1, graph.degree[node_idx])
-
-# ------------------------
-# Main Function: get_structural_node_vectors
-# ------------------------
 
 def get_structural_node_vectors(original_graph, radius, distance, connector, nbits, sigma=None, degree_threshold=None):
     """
@@ -233,7 +185,7 @@ def get_structural_node_vectors(original_graph, radius, distance, connector, nbi
         convert_func = items_to_sparse_histogram
         for node_idx in graph.nodes():
             accumulator = accumulator_class()
-            _process_node_features_unweighted(node_idx, graph, distance, connector, nbits, accumulator)
+            _process_node_features(node_idx, graph, distance, connector, nbits, accumulator)
             node_vector = convert_func(accumulator.get(), nbits)
             node_vectors.append(node_vector)
     else:
@@ -242,7 +194,7 @@ def get_structural_node_vectors(original_graph, radius, distance, connector, nbi
         convert_func = weighted_sparse_histogram
         for node_idx in graph.nodes():
             accumulator = accumulator_class()
-            _process_node_features_weighted(node_idx, graph, distance, connector, nbits, sigma, accumulator)
+            _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator)
             node_vector = convert_func(accumulator.get(), nbits)
             node_vectors.append(node_vector)
     
