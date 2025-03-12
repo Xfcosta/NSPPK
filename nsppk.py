@@ -86,7 +86,7 @@ def weighted_sparse_histogram(weighted_dict, nbits):
     return sp.sparse.csr_matrix((data, (rows, cols)), shape=(1, 2**nbits))
 
 def edge_triplet_hash(u, v, graph):
-    return hash_set([graph.nodes[u]['label'], graph.edges[u, v]['label'], graph.nodes[v]['label']])
+    return hash_set([_hash(graph.nodes[u]['label']), _hash(graph.edges[u, v]['label']), _hash(graph.nodes[v]['label'])])
 
 def precompute_edge_triplet_hashes(graph):
     for u, v in graph.edges():
