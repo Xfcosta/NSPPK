@@ -125,14 +125,15 @@ def _process_node_features_unweighted(node_idx, graph, distance, connector, nbit
     node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=distance)
     dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
     
+    for target_node, dist in node_idxs_to_dist_dict.items():
+        w = 1.0  # Inline constant weight
+        for neighbor in graph.neighbors(target_node):
+            triplet_hash = graph.edges[target_node, neighbor].get('triplet_hash', None)
+            if triplet_hash is not None:
+                distance_triplet_hash = hash_value(hash_sequence([dist, triplet_hash]), nbits=nbits)
+                accumulator.add(distance_triplet_hash, w)
+
     for code_i in graph.nodes[node_idx]['rooted_graph_hash']:
-        for target_node, dist in node_idxs_to_dist_dict.items():
-            w = 1.0  # Inline constant weight
-            for neighbor in graph.neighbors(target_node):
-                triplet_hash = graph.edges[target_node, neighbor].get('triplet_hash', None)
-                if triplet_hash is not None:
-                    distance_triplet_hash = hash_value(hash_sequence([dist, triplet_hash]), nbits=nbits)
-                    accumulator.add(distance_triplet_hash, w)
         for dist, node_idxs in sorted(dist_to_node_idxs_dict.items()):
             w = 1.0  # Inline constant weight
             for curr_node_idx in node_idxs:
@@ -163,15 +164,16 @@ def _process_node_features_weighted(node_idx, graph, distance, connector, nbits,
     # Weighted: inline computation of weight using the Gaussian function.
     node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=distance)
     dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
-    
+
+    for target_node, dist in node_idxs_to_dist_dict.items():
+        w = gaussian_weight(dist, sigma)
+        for neighbor in graph.neighbors(target_node):
+            triplet_hash = graph.edges[target_node, neighbor].get('triplet_hash', None)
+            if triplet_hash is not None:
+                distance_triplet_hash = hash_value(hash_sequence([dist, triplet_hash]), nbits=nbits)
+                accumulator.add(distance_triplet_hash, w)
+
     for code_i in graph.nodes[node_idx]['rooted_graph_hash']:
-        for target_node, dist in node_idxs_to_dist_dict.items():
-            w = gaussian_weight(dist, sigma)
-            for neighbor in graph.neighbors(target_node):
-                triplet_hash = graph.edges[target_node, neighbor].get('triplet_hash', None)
-                if triplet_hash is not None:
-                    distance_triplet_hash = hash_value(hash_sequence([dist, triplet_hash]), nbits=nbits)
-                    accumulator.add(distance_triplet_hash, w)
         for dist, node_idxs in sorted(dist_to_node_idxs_dict.items()):
             w = gaussian_weight(dist, sigma)
             for curr_node_idx in node_idxs:
