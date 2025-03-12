@@ -783,7 +783,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
         Returns:
             str: The string representation.
         """
-        return f"{self.__class__.__name__}(radius={self.radius}, distance={self.distance}, connector={self.connector}, " \
+        return f"{self.__class__.__name__}(radius={self.radius}, distance={self.distance}, connector={self.connector}, sigma={self.sigma}, " \
                f"nbits={self.nbits}, degree_threshold={self.degree_threshold}, dense={self.dense}, " \
                f"parallel={self.parallel}, weight_key={self.weight_key}, node_attribute_key={self.node_attribute_key}, " \
                f"attribute_dim={self.attribute_dim}, attribute_alphabet_size={self.attribute_alphabet_size})"
