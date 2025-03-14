@@ -73,17 +73,18 @@ def rooted_graph_hashes(node_idx, graph, radius=1):
 
 def items_to_sparse_histogram(items, nbits):
     histogram_dict = Counter(items)
-    num_items = len(histogram_dict)
-    rows = np.zeros(num_items, dtype=int)
-    cols = np.array(list(histogram_dict.keys()), dtype=int)
-    data = np.array(list(histogram_dict.values()), dtype=int)
-    return sp.sparse.csr_matrix((data, (rows, cols)), shape=(1, 2**nbits))
+    # Create a LIL matrix first
+    mat = sp.sparse.lil_matrix((1, 2**nbits), dtype=int)
+    for col, value in histogram_dict.items():
+        mat[0, col] = value
+    return mat
 
 def weighted_sparse_histogram(weighted_dict, nbits):
-    cols = np.array(list(weighted_dict.keys()), dtype=int)
-    data = np.array(list(weighted_dict.values()), dtype=float)
-    rows = np.zeros(len(weighted_dict), dtype=int)
-    return sp.sparse.csr_matrix((data, (rows, cols)), shape=(1, 2**nbits))
+    # Create a LIL matrix first
+    mat = sp.sparse.lil_matrix((1, 2**nbits), dtype=float)
+    for col, value in weighted_dict.items():
+        mat[0, col] = value
+    return mat
 
 def edge_triplet_hash(u, v, graph):
     return hash_set([_hash(graph.nodes[u]['label']), _hash(graph.edges[u, v]['label']), _hash(graph.nodes[v]['label'])])
@@ -118,18 +119,19 @@ class DictAccumulator:
     def get(self):
         return self.data
 
-def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator):
+def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator, use_edges_as_features=True):
     # Weighted: inline computation of weight using the Gaussian function.
     node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=distance)
     dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
 
-    for target_node, dist in node_idxs_to_dist_dict.items():
-        w = gaussian_weight(dist, sigma)
-        for neighbor in graph.neighbors(target_node):
-            triplet_hash = graph.edges[target_node, neighbor].get('triplet_hash', None)
-            if triplet_hash is not None:
-                distance_triplet_hash = hash_value(hash_sequence([dist, triplet_hash]), nbits=nbits)
-                accumulator.add(distance_triplet_hash, w)
+    if use_edges_as_features:
+        for target_node, dist in node_idxs_to_dist_dict.items():
+            w = gaussian_weight(dist, sigma)
+            for neighbor in graph.neighbors(target_node):
+                triplet_hash = graph.edges[target_node, neighbor].get('triplet_hash', None)
+                if triplet_hash is not None:
+                    distance_triplet_hash = hash_value(hash_sequence([dist, triplet_hash]), nbits=nbits)
+                    accumulator.add(distance_triplet_hash, w)
 
     for code_i in graph.nodes[node_idx]['rooted_graph_hash']:
         for dist, node_idxs in sorted(dist_to_node_idxs_dict.items()):
@@ -152,11 +154,8 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
                             paired_code = hash_sequence([code_i, dist, code_j, union_of_shortest_paths_code])
                         paired_code = hash_value(paired_code, nbits=nbits)
                         accumulator.add(paired_code, w)
-    # Add special tokens (degree info) with weight.
-    accumulator.add(0, 1.0)
-    accumulator.add(1, graph.degree[node_idx])
-
-def get_structural_node_vectors(original_graph, radius, distance, connector, nbits, degree_threshold=None, sigma=None):
+    
+def get_structural_node_vectors(original_graph, radius, distance, connector, nbits, degree_threshold=None, sigma=None, use_edges_as_features=True):
     """
     Generates a feature vector for each node in the graph.
     Uses an unweighted (faster) version if sigma is None, in which the weight is inlined as 1.0.
@@ -185,8 +184,12 @@ def get_structural_node_vectors(original_graph, radius, distance, connector, nbi
         convert_func = items_to_sparse_histogram
         for node_idx in graph.nodes():
             accumulator = accumulator_class()
-            _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator)
+            _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator, use_edges_as_features)
             node_vector = convert_func(accumulator.get(), nbits)
+            # Add special features (degree info)
+            node_vector[0, 0] = 1
+            node_vector[0, 1] = graph.degree[node_idx]
+            node_vector = node_vector.tocsr()
             node_vectors.append(node_vector)
     else:
         # Weighted branch: use DictAccumulator.
@@ -194,8 +197,12 @@ def get_structural_node_vectors(original_graph, radius, distance, connector, nbi
         convert_func = weighted_sparse_histogram
         for node_idx in graph.nodes():
             accumulator = accumulator_class()
-            _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator)
+            _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator, use_edges_as_features)
             node_vector = convert_func(accumulator.get(), nbits)
+            # Add special features (degree info)
+            node_vector[0,0] = 1
+            node_vector[0,1] = graph.degree[node_idx]
+            node_vector = node_vector.tocsr()
             node_vectors.append(node_vector)
     
     return sp.sparse.vstack(node_vectors)
@@ -272,7 +279,7 @@ def reweight_edge_vectors_mtx(edge_vectors_mtx, original_graph, weight_key):
     return csr_matrix(edge_vectors_mtx)
 
 
-def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, add_structural_node_information=True, sigma=None):
+def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, add_structural_node_information=True, sigma=None, use_edges_as_features=True):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -290,7 +297,7 @@ def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_
         scipy.sparse.csr_matrix: The sparse feature matrix representing the graph.
     """
     node_vectors_mtx = get_structural_node_vectors(
-        original_graph, radius, distance, connector, nbits, degree_threshold, sigma
+        original_graph, radius, distance, connector, nbits, degree_threshold, sigma, use_edges_as_features
     )
     if weight_key is not None:
         node_vectors_mtx = reweight_node_vectors_mtx(node_vectors_mtx, original_graph, weight_key)
@@ -305,7 +312,7 @@ def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_
     return node_vectors_mtx
 
 
-def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, sigma=None):
+def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -322,9 +329,9 @@ def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, w
     Returns:
         scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
     """
-    node_vectors_mtx = get_structural_node_vectors(original_graph, radius, distance, connector, nbits, degree_threshold, sigma)
+    node_vectors_mtx = get_structural_node_vectors(original_graph, radius, distance, connector, nbits, degree_threshold, sigma, use_edges_as_features)
     node_vectors_mtx = node_vectors_mtx.todense().A
-    attribute_node_vectors_mtx = get_node_vectors(original_graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, add_structural_node_information=False, sigma=sigma)
+    attribute_node_vectors_mtx = get_node_vectors(original_graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, add_structural_node_information=False, sigma=sigma, use_edges_as_features=use_edges_as_features)
     vector_ = attribute_node_vectors_mtx.T.dot(node_vectors_mtx)
     vector = vector_.reshape(1, -1)
     vector = np.power(np.abs(vector), 1/2)
@@ -332,7 +339,7 @@ def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, w
     return csr_matrix(vector)
 
 
-def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None):
+def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -350,7 +357,7 @@ def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_
         scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
     """
     node_vectors_mtx = get_structural_node_vectors(
-        original_graph, radius, distance, connector, nbits, degree_threshold, sigma
+        original_graph, radius, distance, connector, nbits, degree_threshold, sigma, use_edges_as_features
     )
     if weight_key is not None:
         node_vectors_mtx = reweight_node_vectors_mtx(node_vectors_mtx, original_graph, weight_key)
@@ -380,7 +387,7 @@ def split_into_chunks(lst, n):
     return [lst[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n)]
 
 
-def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None):
+def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True):
     """
     Encodes a list of graphs into a sparse matrix of feature vectors.
 
@@ -403,7 +410,7 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
     if parallel and len(graphs) > n_cpus:
         def process_subset(subset):
             return [
-                get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma)
+                get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_edges_as_features)
                 for graph in subset
             ]
 
@@ -413,14 +420,14 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
         graph_vectors = [vec for subset in graph_vectors_subsets for vec in subset]
     else:
         graph_vectors = [
-            get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma)
+            get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_edges_as_features)
             for graph in graphs
         ]
 
     return sp.sparse.vstack(graph_vectors)
 
 
-def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None):
+def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True):
     """
     Encodes a list of graphs into a sparse matrix of feature vectors.
 
@@ -443,7 +450,7 @@ def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits
     if parallel and len(graphs) > n_cpus:
         def process_subset(subset):
             return [
-                get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma)
+                get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_edges_as_features=use_edges_as_features)
                 for graph in subset
             ]
 
@@ -453,14 +460,14 @@ def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits
         graph_vectors = [vec for subset in graph_vectors_subsets for vec in subset]
     else:
         graph_vectors = [
-            get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma)
+            get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_edges_as_features=use_edges_as_features)
             for graph in graphs
         ]
 
     return sp.sparse.vstack(graph_vectors)
 
 
-def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None):
+def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True):
     """
     Encodes a list of graphs into node feature vectors.
 
@@ -483,7 +490,7 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
     if parallel and len(graphs) > n_cpus:
         def process_subset(subset):
             return [
-                get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma)
+                get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_edges_as_features=use_edges_as_features)
                 for graph in subset
             ]
 
@@ -493,7 +500,7 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
         graph_node_vectors = [vec for subset in graph_node_vectors_subsets for vec in subset]
     else:
         graph_node_vectors = [
-            get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma)
+            get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_edges_as_features=use_edges_as_features)
             for graph in graphs
         ]
 
@@ -528,7 +535,7 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
 
     def __init__(self, embedder=None, clustering_predictor=None, classifier=None, radius=1, distance=3, connector=0,
                  nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None, 
-                 node_attribute_key=None, edge_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, use_node_kernel=False, sigma=None):
+                 node_attribute_key=None, edge_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, use_node_kernel=False, sigma=None, use_edges_as_features=True):
         self.embedder = embedder
         self.clustering_predictor = clustering_predictor
         self.classifier = classifier
@@ -546,6 +553,7 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
         self.attribute_alphabet_size = attribute_alphabet_size
         self.use_node_kernel = use_node_kernel
         self.sigma = sigma
+        self.use_edges_as_features = use_edges_as_features
 
     def __repr__(self):
         """
@@ -669,7 +677,8 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
                 self.weight_key,
                 self.node_attribute_key,
                 self.degree_threshold,
-                self.sigma
+                self.sigma,
+                self.use_edges_as_features
             )
         else:
             data_mtx = paired_graphs_vector_encoder(
@@ -683,7 +692,8 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
                 self.node_attribute_key,
                 self.edge_attribute_key,
                 self.degree_threshold,
-                self.sigma
+                self.sigma,
+                self.use_edges_as_features
             )
 
         if self.dense:
@@ -717,7 +727,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
     """
 
     def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None, 
-                 node_attribute_key=None, edge_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, use_node_kernel=False, sigma=None):
+                 node_attribute_key=None, edge_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, use_node_kernel=False, sigma=None, use_edges_as_features=True):
         self.radius = radius
         self.distance = distance
         self.connector = connector
@@ -732,6 +742,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
         self.attribute_alphabet_size = attribute_alphabet_size
         self.use_node_kernel = use_node_kernel
         self.sigma = sigma
+        self.use_edges_as_features = use_edges_as_features
 
         self._initialize_components()
 
@@ -773,7 +784,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
             attribute_dim=self.attribute_dim,
             attribute_alphabet_size=self.attribute_alphabet_size,
             use_node_kernel=self.use_node_kernel,
-            sigma=self.sigma
+            sigma=self.sigma,
+            use_edges_as_features=self.use_edges_as_features
         )
 
     def __repr__(self):
@@ -783,7 +795,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
         Returns:
             str: The string representation.
         """
-        return f"{self.__class__.__name__}(radius={self.radius}, distance={self.distance}, connector={self.connector}, sigma={self.sigma}, " \
+        return f"{self.__class__.__name__}(radius={self.radius}, distance={self.distance}, connector={self.connector}, sigma={self.sigma}, use_edges_as_features={self.use_edges_as_features}" \
                f"nbits={self.nbits}, degree_threshold={self.degree_threshold}, dense={self.dense}, " \
                f"parallel={self.parallel}, weight_key={self.weight_key}, node_attribute_key={self.node_attribute_key}, " \
                f"attribute_dim={self.attribute_dim}, attribute_alphabet_size={self.attribute_alphabet_size})"
@@ -840,7 +852,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
             'attribute_dim': self.attribute_dim,
             'attribute_alphabet_size': self.attribute_alphabet_size,
             'use_node_kernel': self.use_node_kernel,
-            'sigma': self.sigma
+            'sigma': self.sigma,
+            'use_edges_as_features': self.use_edges_as_features
         }
 
         if deep:
@@ -915,7 +928,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
                 attribute_dim=self.attribute_dim,
                 attribute_alphabet_size=self.attribute_alphabet_size,
                 use_node_kernel=self.use_node_kernel,
-                sigma=self.sigma
+                sigma=self.sigma,
+                use_edges_as_features=self.use_edges_as_features
             )
 
         return self
@@ -946,7 +960,7 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
     """
 
     def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None, 
-                 node_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, sigma=None):
+                 node_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, sigma=None, use_edges_as_features=True):
         self.nsppk = NSPPK(
             radius=radius,
             distance=distance,
@@ -959,7 +973,8 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             node_attribute_key=node_attribute_key,
             attribute_dim=attribute_dim,
             attribute_alphabet_size=attribute_alphabet_size,
-            sigma=sigma
+            sigma=sigma,
+            use_edges_as_features=use_edges_as_features
         )
         
     def set_nbits(self, nbits):
@@ -1024,7 +1039,8 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             self.nsppk.base_nsppk.weight_key,
             self.nsppk.base_nsppk.node_attribute_key,
             self.nsppk.base_nsppk.degree_threshold,
-            self.nsppk.sigma
+            self.nsppk.sigma,
+            self.nsppk.use_edges_as_features
         )
 
         if self.nsppk.base_nsppk.dense:
