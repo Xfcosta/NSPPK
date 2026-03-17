@@ -98,6 +98,21 @@ def gaussian_weight(dist, sigma):
         return 1.0
     return np.exp(- (dist ** 2) / (sigma ** 2))
 
+
+def ensure_graph_labels(graph, default_label=0):
+    """
+    Ensure every node and edge has a discrete label.
+
+    NSPPK fundamentally hashes node and edge labels. For plain NetworkX graphs
+    with unlabeled nodes or edges, fall back to a shared default label so the
+    estimator remains usable without extra preprocessing.
+    """
+    for node_idx in graph.nodes():
+        graph.nodes[node_idx].setdefault('label', default_label)
+    for u, v in graph.edges():
+        graph.edges[u, v].setdefault('label', default_label)
+    return graph
+
 # ------------------------
 # Accumulator Classes
 # ------------------------
@@ -162,6 +177,7 @@ def get_structural_node_vectors(original_graph, radius, distance, connector, nbi
     If sigma is provided, the Gaussian weighted variant is used.
     """
     graph = original_graph.copy()
+    ensure_graph_labels(graph)
     
     # Precompute node and edge hashes.
     for node_idx in graph.nodes():
