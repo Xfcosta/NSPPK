@@ -14,6 +14,8 @@ from sklearn.decomposition import TruncatedSVD
 from sklearn.model_selection import train_test_split
 import multiprocessing_on_dill as mp
 
+__version__ = "0.1.0"
+
 # ------------------------
 # Hash and Utility Functions
 # ------------------------

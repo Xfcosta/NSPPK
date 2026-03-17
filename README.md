@@ -5,6 +5,20 @@ Neighbourhood Subgraph Pairwise Pathway Kernel
 
 NSPPK stands for **Neighborhood Subgraph Pairwise Pathway Kernel**. It is a graph encoding and feature extraction framework designed to capture both local (node-level) and structural (subgraph-level) information from graphs. The extracted features are then used as input for machine learning models, enabling tasks such as graph classification, regression, or clustering.
 
+## Installation
+
+Install the package in editable mode from the repository root:
+
+```bash
+pip install -e .
+```
+
+Then import it in Python with:
+
+```python
+from nsppk import NSPPK
+```
+
 ### Key Concepts of NSPPK:
 
 1. **Node-Level and Subgraph-Level Information**:
