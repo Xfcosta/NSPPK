@@ -103,3 +103,83 @@ def plot_graphs(
 
     plt.tight_layout()
     plt.show()
+
+
+def plot_graph_importance(
+    graphs,
+    titles=None,
+    importance_key="importance",
+    cols=4,
+    size=4.5,
+    use_pos=False,
+):
+    """
+    Plot graphs with node and edge colors driven by an importance attribute.
+
+    Args:
+        graphs (list[nx.Graph]): Graphs to plot.
+        titles (list[str] | None): Optional title for each graph.
+        importance_key (str, default='importance'): Node and edge attribute used for coloring.
+        cols (int, default=4): Number of subplot columns.
+        size (float, default=4.5): Base subplot size used in ``figsize=(size * cols, size * rows)``.
+        use_pos (bool, default=False): Use each node's ``pos`` attribute when present for all nodes.
+    """
+    if not graphs:
+        raise ValueError("graphs must contain at least one graph.")
+    if cols < 1:
+        raise ValueError("cols must be at least 1.")
+    if size <= 0:
+        raise ValueError("size must be positive.")
+
+    if titles is None:
+        titles = [None] * len(graphs)
+    if len(titles) != len(graphs):
+        raise ValueError("titles must be None or have the same length as graphs.")
+
+    rows = math.ceil(len(graphs) / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(size * cols, size * rows))
+    axes = np.atleast_1d(axes).ravel()
+    cmap = plt.cm.viridis
+
+    for ax, graph, title in zip(axes, graphs, titles):
+        pos = _graph_pos(graph, use_pos=use_pos)
+        node_values = np.asarray(
+            [graph.nodes[node].get(importance_key, 0.0) for node in graph.nodes()],
+            dtype=float,
+        )
+        edge_values = [
+            graph.edges[u, v].get(importance_key, 0.0)
+            for u, v in graph.edges()
+        ]
+        edge_widths = 1.0 + 2.5 * np.asarray(edge_values, dtype=float)
+
+        nx.draw(
+            graph,
+            pos,
+            ax=ax,
+            node_color=node_values,
+            cmap=cmap,
+            vmin=0.0,
+            vmax=1.0,
+            node_size=220,
+            edge_color=edge_values,
+            edge_cmap=cmap,
+            edge_vmin=0.0,
+            edge_vmax=1.0,
+            width=edge_widths,
+            edgecolors="#111111",
+            linewidths=1.0,
+            with_labels=True,
+            font_size=8,
+        )
+        if title is not None:
+            ax.set_title(title)
+        ax.set_axis_off()
+
+    for ax in axes[len(graphs):]:
+        ax.set_axis_off()
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0.0, vmax=1.0))
+    sm.set_array([])
+    fig.colorbar(sm, ax=axes.tolist(), shrink=0.8, label="Importance")
+    plt.show()
