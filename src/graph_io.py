@@ -1,3 +1,4 @@
+import csv
 import io
 import sys
 import time
@@ -126,25 +127,16 @@ def _hashable_value(value):
     return value
 
 
-def _extract_smiles_and_name(line):
+def _parse_smiles_line(line):
     stripped = line.strip()
     if not stripped or stripped.startswith("#"):
-        return None, None
-
-    lowered = stripped.lower()
-    if lowered == "smiles" or lowered.startswith("smiles,") or lowered.startswith("smiles\t") or lowered.startswith("smiles "):
-        return None, None
+        return None
 
     if "," in stripped:
-        parts = [part.strip() for part in stripped.split(",")]
-        smiles = parts[0].strip('"')
-        name = parts[1].strip('"') if len(parts) > 1 and parts[1] else None
-        return smiles, name
+        row = next(csv.reader([stripped]))
+        return [value.strip() for value in row]
 
-    parts = stripped.split()
-    smiles = parts[0]
-    name = parts[1] if len(parts) > 1 else None
-    return smiles, name
+    return stripped.split()
 
 
 def _iter_smiles_graphs(uri):
@@ -155,10 +147,16 @@ def _iter_smiles_graphs_with_stats(uri, stats=None):
     Chem = _require_rdkit("smiles")
 
     with _open_text_uri(uri) as stream:
+        csv_header = None
         for line_number, line in enumerate(stream, start=1):
-            smiles, name = _extract_smiles_and_name(line)
-            if not smiles:
+            parts = _parse_smiles_line(line)
+            if not parts:
                 continue
+            if parts[0].lower() == "smiles":
+                csv_header = parts
+                continue
+
+            smiles = parts[0]
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 if stats is not None:
@@ -169,8 +167,14 @@ def _iter_smiles_graphs_with_stats(uri, stats=None):
             graph.graph["smiles"] = smiles
             graph.graph["source_uri"] = str(uri)
             graph.graph["source_line"] = line_number
-            if name is not None:
-                graph.graph["name"] = name
+            if csv_header is not None:
+                for key, value in zip(csv_header[1:], parts[1:]):
+                    if key:
+                        graph.graph[key] = value
+                if len(parts) > 1 and parts[1]:
+                    graph.graph["name"] = parts[1]
+            elif len(parts) > 1 and parts[1]:
+                graph.graph["name"] = parts[1]
             yield graph
 
 

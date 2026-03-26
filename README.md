@@ -60,6 +60,13 @@ Built-in `type` values:
 
 `balance=True` only applies to `load_from(...)`. It materializes all graphs first, then rebalances classes using `label_extractor(graph)`. When balancing is enabled, `limit` must be `None` or an integer.
 
+Balancing details:
+
+- `limit=None`: return the largest class-balanced subset available
+- `limit=<integer>`: return a balanced subset capped at that size
+- if the requested size is not divisible by the number of classes, the remainder is filled from the leftover pool after equal per-class sampling
+- if `label_extractor` is omitted, `load_from(...)` uses `graph.graph["name"]`
+
 `verbose=True` enables cumulative progress logs during loading or streaming. The log output includes:
 
 - graphs seen and loaded so far
@@ -105,7 +112,7 @@ molecular_graphs = nsppk.load_from(
     limit=8000,
     random_state=42,
     balance=True,
-    label_extractor=lambda graph: int(graph.graph["name"]),
+    label_extractor=lambda graph: int(graph.graph["HIV_active"]),
 )
 
 # Show cumulative progress logs while loading or streaming.
@@ -183,10 +190,10 @@ The `smiles` reader is tolerant of common text formats:
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 
-# Instantiate the NSPPK transformer
+# Preferred explicit form
 nsppk_transformer = NSPPK(radius=2, distance=3, connector=1, nbits=12, dense=True, parallel=True)
 
-# Short aliases are also accepted when you want a compact constructor form.
+# Accepted compact alias form for quick experiments and notebooks.
 compact_nsppk = NSPPK(r=2, d=3, c=1, nbits=12)
 
 # Create a pipeline with NSPPK and a classifier
@@ -201,6 +208,8 @@ pipeline.fit(training_graphs, training_labels)
 # Predict on new data
 predictions = pipeline.predict(test_graphs)
 ```
+
+The long-form names `radius`, `distance`, and `connector` remain the preferred documentation style. The short forms `r`, `d`, and `c` are accepted as constructor aliases.
 
 ## Node Importance
 

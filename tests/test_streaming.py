@@ -100,6 +100,29 @@ class StreamingIOTests(unittest.TestCase):
         self.assertEqual([graph.graph["smiles"] for graph in graphs], ["CCO", "CC"])
         self.assertEqual([graph.graph.get("name") for graph in graphs], ["ethanol", "propane"])
 
+    def test_load_from_preserves_named_csv_columns(self):
+        csv_smiles_path = self.data_dir / "mols_targets.csv"
+        csv_smiles_path.write_text(
+            "\n".join(
+                [
+                    "smiles,activity,HIV_active",
+                    "CCO,CI,0",
+                    "CC,CA,1",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False)
+        graphs = vectorizer.load_from(csv_smiles_path, "smiles")
+
+        self.assertEqual(len(graphs), 2)
+        self.assertEqual(graphs[0].graph["activity"], "CI")
+        self.assertEqual(graphs[0].graph["HIV_active"], "0")
+        self.assertEqual(graphs[1].graph["activity"], "CA")
+        self.assertEqual(graphs[1].graph["HIV_active"], "1")
+
     def test_load_from_fractional_limit_is_reproducible(self):
         vectorizer = nsppk.NSPPK(parallel=False, dense=False)
         graphs_a = vectorizer.load_from(self.smiles_path, "smiles", limit=0.5, random_state=7)
