@@ -26,6 +26,7 @@ The repository includes a few runnable notebooks that cover the main usage patte
 - `notebooks/Demo.ipynb`: synthetic graph-sequence walkthrough for graph-level NSPPK behavior
 - `notebooks/Importance Demo.ipynb`: synthetic two-class dataset showing node and edge importance with `NodeNSPPK` + `ImportanceNSPPK`
 - `notebooks/Streaming Benchmark.ipynb`: source-loading and streaming examples
+- `notebooks/Molecular Graph Learning Curve.ipynb`: learning-curve benchmark on the MoleculeNet HIV dataset with `NSPPK` + `SGDClassifier`
 - `notebooks/Molecular Graph nbits Benchmark.ipynb`: predictive performance vs hashed feature dimension on molecular graphs
 - `notebooks/Molecular Graph Speed Benchmark.ipynb`: runtime scaling on molecular graphs
 
@@ -39,7 +40,7 @@ NSPPK now exposes two source-ingestion helpers:
 Both `NSPPK` and `NodeNSPPK` support the same interface:
 
 ```python
-load_from(uri, type, reader=None, limit=None, random_state=None, verbose=False)
+load_from(uri, type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None)
 stream_from(uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False)
 ```
 
@@ -56,6 +57,8 @@ Built-in `type` values:
 - `None`: include all graphs
 - integer `n >= 0`: take the first `n` graphs
 - float `0 < p < 1`: sample each graph independently with probability `p`
+
+`balance=True` only applies to `load_from(...)`. It materializes all graphs first, then rebalances classes using `label_extractor(graph)`. When balancing is enabled, `limit` must be `None` or an integer.
 
 `verbose=True` enables cumulative progress logs during loading or streaming. The log output includes:
 
@@ -93,6 +96,16 @@ sampled_graphs = nsppk.load_from(
     "https://cache.docking.org/2D/AA/AAAA.smi",
     "smiles",
     limit=0.1,
+)
+
+# Balanced materialized subset using labels attached to each graph.
+molecular_graphs = nsppk.load_from(
+    "https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/HIV.csv",
+    "smiles",
+    limit=8000,
+    random_state=42,
+    balance=True,
+    label_extractor=lambda graph: int(graph.graph["name"]),
 )
 
 # Show cumulative progress logs while loading or streaming.
@@ -172,6 +185,9 @@ from sklearn.svm import SVC
 
 # Instantiate the NSPPK transformer
 nsppk_transformer = NSPPK(radius=2, distance=3, connector=1, nbits=12, dense=True, parallel=True)
+
+# Short aliases are also accepted when you want a compact constructor form.
+compact_nsppk = NSPPK(r=2, d=3, c=1, nbits=12)
 
 # Create a pipeline with NSPPK and a classifier
 pipeline = Pipeline([

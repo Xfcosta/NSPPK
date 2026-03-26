@@ -40,6 +40,19 @@ def _sync_graph_io_hooks():
     _graph_io._require_rdkit = _require_rdkit
     _graph_io._require_torch_geometric = _require_torch_geometric
 
+
+def _resolve_alias(primary_name, primary_value, alias_name, alias_value, default_value):
+    if alias_value is None:
+        return primary_value
+    if primary_value == default_value:
+        return alias_value
+    if primary_value != alias_value:
+        raise ValueError(
+            f"Conflicting values for '{primary_name}' and '{alias_name}': "
+            f"{primary_value!r} != {alias_value!r}."
+        )
+    return alias_value
+
 def items_to_sparse_histogram(items, nbits):
     histogram_dict = Counter(items)
     # Create a LIL matrix first
@@ -851,8 +864,12 @@ class NSPPK(BaseEstimator, TransformerMixin):
         sigma (float, optional): The sigma parameter for Gaussian weighting. Defaults to None.
     """
 
-    def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None, 
-                 node_attribute_key=None, edge_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, use_node_kernel=False, sigma=None, use_edges_as_features=True):
+    def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None,
+                 node_attribute_key=None, edge_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, use_node_kernel=False, sigma=None,
+                 use_edges_as_features=True, r=None, d=None, c=None):
+        radius = _resolve_alias('radius', radius, 'r', r, 1)
+        distance = _resolve_alias('distance', distance, 'd', d, 3)
+        connector = _resolve_alias('connector', connector, 'c', c, 0)
         self.radius = radius
         self.distance = distance
         self.connector = connector
@@ -868,6 +885,9 @@ class NSPPK(BaseEstimator, TransformerMixin):
         self.use_node_kernel = use_node_kernel
         self.sigma = sigma
         self.use_edges_as_features = use_edges_as_features
+        self.r = radius
+        self.d = distance
+        self.c = connector
 
         self._initialize_components()
 
@@ -939,7 +959,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
         self.base_nsppk.fit(graphs, targets)
         return self
 
-    def load_from(self, uri, type, reader=None, limit=None, random_state=None, verbose=False):
+    def load_from(self, uri, type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None):
         """
         Load graphs from a local path or URL and materialize them as a list.
 
@@ -952,21 +972,23 @@ class NSPPK(BaseEstimator, TransformerMixin):
                 integer loads the first ``limit`` graphs, and a float in ``(0, 1)`` applies Bernoulli sampling.
             random_state (int or numpy.random.Generator, optional): Sampling seed used only for fractional ``limit``.
             verbose (bool, default=False): Whether to print cumulative loading statistics while streaming.
+            balance (bool, default=False): Whether to rebalance the loaded graphs across class labels before returning them.
+            label_extractor (callable, optional): Callable extracting a class label from each graph when ``balance=True``.
+                Defaults to ``lambda graph: graph.graph['name']``.
 
         Returns:
             list of networkx.Graph: Materialized graphs.
         """
         _sync_graph_io_hooks()
-        return list(
-            _graph_io._iter_loaded_graphs(
-                uri,
-                type,
-                reader=reader,
-                limit=limit,
-                random_state=random_state,
-                verbose=verbose,
-                mode='load',
-            )
+        return _graph_io._materialize_loaded_graphs(
+            uri,
+            type,
+            reader=reader,
+            limit=limit,
+            random_state=random_state,
+            verbose=verbose,
+            balance=balance,
+            label_extractor=label_extractor,
         )
 
     def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False):
@@ -1146,8 +1168,11 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
         sigma (float, optional): The sigma parameter for Gaussian weighting. Defaults to None.
     """
 
-    def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None, 
-                 node_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, sigma=None, use_edges_as_features=True):
+    def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None,
+                 node_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, sigma=None, use_edges_as_features=True, r=None, d=None, c=None):
+        radius = _resolve_alias('radius', radius, 'r', r, 1)
+        distance = _resolve_alias('distance', distance, 'd', d, 3)
+        connector = _resolve_alias('connector', connector, 'c', c, 0)
         self.nsppk = NSPPK(
             radius=radius,
             distance=distance,
@@ -1163,6 +1188,22 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             sigma=sigma,
             use_edges_as_features=use_edges_as_features
         )
+        self.radius = radius
+        self.distance = distance
+        self.connector = connector
+        self.nbits = nbits
+        self.degree_threshold = degree_threshold
+        self.dense = dense
+        self.parallel = parallel
+        self.weight_key = weight_key
+        self.node_attribute_key = node_attribute_key
+        self.attribute_dim = attribute_dim
+        self.attribute_alphabet_size = attribute_alphabet_size
+        self.sigma = sigma
+        self.use_edges_as_features = use_edges_as_features
+        self.r = radius
+        self.d = distance
+        self.c = connector
         
     def set_nbits(self, nbits):
         """
@@ -1196,7 +1237,7 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
         self.nsppk.fit(graphs, targets)
         return self
 
-    def load_from(self, uri, type, reader=None, limit=None, random_state=None, verbose=False):
+    def load_from(self, uri, type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None):
         """
         Load graphs from a local path or URL and materialize them as a list.
 
@@ -1209,6 +1250,9 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
                 integer loads the first ``limit`` graphs, and a float in ``(0, 1)`` applies Bernoulli sampling.
             random_state (int or numpy.random.Generator, optional): Sampling seed used only for fractional ``limit``.
             verbose (bool, default=False): Whether to print cumulative loading statistics while streaming.
+            balance (bool, default=False): Whether to rebalance the loaded graphs across class labels before returning them.
+            label_extractor (callable, optional): Callable extracting a class label from each graph when ``balance=True``.
+                Defaults to ``lambda graph: graph.graph['name']``.
 
         Returns:
             list of networkx.Graph: Materialized graphs.
@@ -1220,6 +1264,8 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             limit=limit,
             random_state=random_state,
             verbose=verbose,
+            balance=balance,
+            label_extractor=label_extractor,
         )
 
     def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False):

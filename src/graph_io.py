@@ -320,6 +320,82 @@ def _apply_limit(graph_iterable, limit=None, random_state=None):
             yield graph
 
 
+def _normalize_label_extractor(label_extractor):
+    if label_extractor is None:
+        return lambda graph: graph.graph["name"]
+    if not callable(label_extractor):
+        raise TypeError("label_extractor must be callable when provided.")
+    return label_extractor
+
+
+def _select_balanced_indices(labels, target_size, rng):
+    labels = np.asarray(labels)
+    unique_labels = np.unique(labels)
+    if unique_labels.size < 2:
+        raise ValueError("balance=True requires at least two classes.")
+
+    class_indices = {label: np.flatnonzero(labels == label) for label in unique_labels}
+    minority_count = min(len(indices) for indices in class_indices.values())
+    max_balanced_size = minority_count * unique_labels.size
+
+    if target_size is None:
+        target_size = max_balanced_size
+    else:
+        target_size = min(int(target_size), len(labels))
+
+    if target_size <= 0:
+        return np.empty(0, dtype=int)
+
+    per_class = min(minority_count, target_size // unique_labels.size)
+    remainder = target_size - per_class * unique_labels.size
+
+    selected_parts = []
+    leftover_parts = []
+    for label in unique_labels:
+        indices = np.array(class_indices[label], copy=True)
+        chosen = rng.choice(indices, size=per_class, replace=False) if per_class else np.empty(0, dtype=int)
+        selected_parts.append(chosen)
+        if remainder > 0:
+            remaining = np.setdiff1d(indices, chosen, assume_unique=False)
+            leftover_parts.append(remaining)
+
+    selected_idx = np.concatenate(selected_parts) if selected_parts else np.empty(0, dtype=int)
+
+    if remainder > 0:
+        leftovers = np.concatenate([part for part in leftover_parts if len(part)]) if leftover_parts else np.empty(0, dtype=int)
+        if leftovers.size:
+            extra_size = min(remainder, leftovers.size)
+            extra_idx = rng.choice(leftovers, size=extra_size, replace=False)
+            selected_idx = np.concatenate([selected_idx, extra_idx])
+
+    return np.sort(selected_idx)
+
+
+def _materialize_loaded_graphs(uri, source_type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None):
+    if balance and isinstance(limit, Real) and not isinstance(limit, Integral):
+        raise ValueError("balance=True requires limit to be None or a non-negative integer.")
+
+    graph_iterable = _iter_loaded_graphs(
+        uri,
+        source_type,
+        reader=reader,
+        limit=None if balance else limit,
+        random_state=random_state,
+        verbose=verbose,
+        mode="load",
+    )
+    graphs = list(graph_iterable)
+
+    if not balance:
+        return graphs
+
+    rng = _make_rng(random_state)
+    extractor = _normalize_label_extractor(label_extractor)
+    labels = np.asarray([extractor(graph) for graph in graphs])
+    selected_idx = _select_balanced_indices(labels, target_size=limit, rng=rng)
+    return [graphs[idx] for idx in selected_idx]
+
+
 def _iter_loaded_graphs(uri, source_type, reader=None, limit=None, random_state=None, verbose=False, mode="load", log_every=100, log_stream=None):
     stats = {
         "seen": 0,

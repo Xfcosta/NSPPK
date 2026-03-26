@@ -211,5 +211,89 @@ class StreamingIOTests(unittest.TestCase):
                 vectorizer.load_from("ignored.pt", "pyg_pt")
 
 
+class BalancedLoadTests(unittest.TestCase):
+    @staticmethod
+    def _reader(_):
+        labels = [0, 0, 0, 0, 1, 1]
+        for idx, label in enumerate(labels):
+            graph = nx.Graph()
+            graph.add_node(0, label=idx)
+            graph.graph["name"] = label
+            graph.graph["idx"] = idx
+            yield graph
+
+    def test_load_from_can_balance_binary_classes(self):
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False)
+        graphs = vectorizer.load_from(
+            "ignored",
+            "smiles",
+            reader=self._reader,
+            balance=True,
+            random_state=7,
+        )
+
+        labels = [graph.graph["name"] for graph in graphs]
+        self.assertEqual(len(graphs), 4)
+        self.assertEqual(labels.count(0), 2)
+        self.assertEqual(labels.count(1), 2)
+
+    def test_load_from_balance_respects_integer_limit(self):
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False)
+        graphs = vectorizer.load_from(
+            "ignored",
+            "smiles",
+            reader=self._reader,
+            balance=True,
+            limit=3,
+            random_state=7,
+        )
+
+        labels = [graph.graph["name"] for graph in graphs]
+        self.assertEqual(len(graphs), 3)
+        self.assertEqual(labels.count(0), 2)
+        self.assertEqual(labels.count(1), 1)
+
+    def test_load_from_balance_rejects_fractional_limit(self):
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False)
+
+        with self.assertRaises(ValueError):
+            vectorizer.load_from(
+                "ignored",
+                "smiles",
+                reader=self._reader,
+                balance=True,
+                limit=0.5,
+            )
+
+
+class ConstructorAliasTests(unittest.TestCase):
+    def test_nsppk_accepts_short_form_aliases(self):
+        vectorizer = nsppk.NSPPK(r=1, d=4, c=1, nbits=8, parallel=False)
+
+        self.assertEqual(vectorizer.radius, 1)
+        self.assertEqual(vectorizer.distance, 4)
+        self.assertEqual(vectorizer.connector, 1)
+        self.assertEqual(vectorizer.r, 1)
+        self.assertEqual(vectorizer.d, 4)
+        self.assertEqual(vectorizer.c, 1)
+
+    def test_node_nsppk_accepts_short_form_aliases(self):
+        vectorizer = nsppk.NodeNSPPK(r=1, d=4, c=1, nbits=8, parallel=False)
+
+        self.assertEqual(vectorizer.radius, 1)
+        self.assertEqual(vectorizer.distance, 4)
+        self.assertEqual(vectorizer.connector, 1)
+        self.assertEqual(vectorizer.nsppk.radius, 1)
+        self.assertEqual(vectorizer.nsppk.distance, 4)
+        self.assertEqual(vectorizer.nsppk.connector, 1)
+
+    def test_conflicting_aliases_raise_value_error(self):
+        with self.assertRaises(ValueError):
+            nsppk.NSPPK(radius=2, r=3)
+
+        with self.assertRaises(ValueError):
+            nsppk.NodeNSPPK(distance=4, d=5)
+
+
 if __name__ == "__main__":
     unittest.main()
