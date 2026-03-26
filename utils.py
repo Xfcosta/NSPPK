@@ -32,9 +32,27 @@ def _node_colors(graph, node_color_key):
     return [color_map[label] for label in labels]
 
 
-def plot_graphs(graphs, titles=None, num_graphs_per_row=7, node_color_key='label', size=3.5):
+def _graph_pos(graph, use_pos):
+    if use_pos:
+        node_pos = {
+            node: graph.nodes[node].get("pos")
+            for node in graph.nodes()
+        }
+        if all(pos is not None for pos in node_pos.values()):
+            return node_pos
+    return nx.kamada_kawai_layout(graph)
+
+
+def plot_graphs(
+    graphs,
+    titles=None,
+    num_graphs_per_row=7,
+    node_color_key='label',
+    size=3.75,
+    use_pos=False,
+):
     """
-    Plot a list of graphs using a Kamada-Kawai layout and bright pastel node colors.
+    Plot a list of graphs using stored node positions or a Kamada-Kawai layout.
 
     Args:
         graphs (list[nx.Graph]): Graphs to plot.
@@ -42,6 +60,7 @@ def plot_graphs(graphs, titles=None, num_graphs_per_row=7, node_color_key='label
         num_graphs_per_row (int, default=7): Number of graphs per subplot row.
         node_color_key (str | None, default='label'): Node attribute used to group pastel colors.
         size (float, default=4.0): Base subplot size used in ``figsize=(size * cols, size * rows)``.
+        use_pos (bool, default=False): Use each node's ``pos`` attribute when present for all nodes.
     """
     if not graphs:
         raise ValueError("graphs must contain at least one graph.")
@@ -61,15 +80,16 @@ def plot_graphs(graphs, titles=None, num_graphs_per_row=7, node_color_key='label
     axes = np.atleast_1d(axes).ravel()
 
     for ax, graph, title in zip(axes, graphs, titles):
-        pos = nx.kamada_kawai_layout(graph)
+        pos = _graph_pos(graph, use_pos=use_pos)
         nx.draw(
             graph,
             pos,
             ax=ax,
             node_color=_node_colors(graph, node_color_key),
             node_size=150,
-            edge_color="#4F5D75",
-            edgecolors="#2F4858",
+            edge_color="#000000",
+            edgecolors="#000000",
+            width=1.5,
             linewidths=1.5,
             with_labels=True,
             font_size=8,
