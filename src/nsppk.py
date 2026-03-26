@@ -1,14 +1,6 @@
-import io
 import math
-import time
 from collections import defaultdict, Counter
-from contextlib import contextmanager
 import copy
-import hashlib
-import sys
-from numbers import Integral, Real
-from urllib.parse import urlparse
-import urllib.request
 import networkx as nx
 import numpy as np
 import scipy as sp
@@ -21,64 +13,32 @@ from sklearn.decomposition import TruncatedSVD
 from sklearn.model_selection import train_test_split
 import multiprocessing_on_dill as mp
 
+import graph_io as _graph_io
+from graph_hash import (
+    _hash,
+    edge_triplet_hash,
+    hash_sequence,
+    hash_set,
+    hash_value,
+    invert_dict,
+    masked_hash_value,
+    node_hash,
+    precompute_edge_triplet_hashes,
+    rooted_graph_hashes,
+)
+from graph_io import ensure_graph_labels
+
 __version__ = "0.1.0"
 
-# ------------------------
-# Hash and Utility Functions
-# ------------------------
+_make_rng = _graph_io._make_rng
+_require_rdkit = _graph_io._require_rdkit
+_require_torch_geometric = _graph_io._require_torch_geometric
 
-def _hash(value):
-    value_str = str(value)
-    value_bytes = value_str.encode()
-    sha256_hash = hashlib.sha256(value_bytes).hexdigest()
-    hash_int = int(sha256_hash, 16) & (2**30 - 1)
-    return hash_int
 
-def masked_hash_value(value, bitmask=(2**20 - 1)):
-    return _hash(value) & bitmask
-
-def hash_value(value, nbits=10):
-    max_index = 2 ** nbits
-    h = masked_hash_value(value, max_index - 3)
-    h += 2  # Offset by 2 to ensure hash is never 0 or 1
-    return h
-
-def hash_sequence(iterable):
-    return _hash(tuple(iterable))
-
-def hash_set(iterable):
-    sorted_iterable = sorted(iterable)
-    tuple_representation = tuple(sorted_iterable)
-    return _hash(tuple_representation)
-
-def node_hash(node_idx, graph):
-    uh = _hash(graph.nodes[node_idx]['label'])
-    edges_h = [
-        _hash((_hash(graph.nodes[v]['label']), _hash(graph.edges[node_idx, v]['label'])))
-        for v in graph.neighbors(node_idx)
-    ]
-    nh = hash_set(edges_h)
-    ext_node_h = _hash((uh, nh))
-    return ext_node_h
-
-def invert_dict(mydict):
-    reversed_dict = defaultdict(list)
-    for key, value in mydict.items():
-        reversed_dict[value].append(key)
-    return reversed_dict
-
-def rooted_graph_hashes(node_idx, graph, radius=1):
-    node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=radius)
-    dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
-    iso_distance_codes_list = [
-        hash_set([graph.nodes[curr_node_idx]['node_label_hash'] if dist == 0 
-                  else graph.nodes[curr_node_idx]['node_hash']
-                  for curr_node_idx in node_idxs])
-        for dist, node_idxs in sorted(dist_to_node_idxs_dict.items())
-    ]
-    h_list = [hash_sequence(iso_distance_codes_list[:i])
-              for i in range(1, len(iso_distance_codes_list) + 1)]
-    return h_list
+def _sync_graph_io_hooks():
+    _graph_io._make_rng = _make_rng
+    _graph_io._require_rdkit = _require_rdkit
+    _graph_io._require_torch_geometric = _require_torch_geometric
 
 def items_to_sparse_histogram(items, nbits):
     histogram_dict = Counter(items)
@@ -95,405 +55,11 @@ def weighted_sparse_histogram(weighted_dict, nbits):
         mat[0, col] = value
     return mat
 
-def edge_triplet_hash(u, v, graph):
-    return hash_set([_hash(graph.nodes[u]['label']), _hash(graph.edges[u, v]['label']), _hash(graph.nodes[v]['label'])])
-
-def precompute_edge_triplet_hashes(graph):
-    for u, v in graph.edges():
-        graph.edges[u, v]['triplet_hash'] = edge_triplet_hash(u, v, graph)
-
 def gaussian_weight(dist, sigma):
     if sigma is None:
         return 1.0
     return np.exp(- (dist ** 2) / (sigma ** 2))
 
-
-def ensure_graph_labels(graph, default_label=0):
-    """
-    Ensure every node and edge has a discrete label.
-
-    NSPPK fundamentally hashes node and edge labels. For plain NetworkX graphs
-    with unlabeled nodes or edges, fall back to a shared default label so the
-    estimator remains usable without extra preprocessing.
-    """
-    for node_idx in graph.nodes():
-        graph.nodes[node_idx].setdefault('label', default_label)
-    for u, v in graph.edges():
-        graph.edges[u, v].setdefault('label', default_label)
-    return graph
-
-
-def _is_url(uri):
-    scheme = urlparse(str(uri)).scheme
-    return scheme in {'http', 'https'}
-
-
-@contextmanager
-def _open_binary_uri(uri):
-    if _is_url(uri):
-        stream = urllib.request.urlopen(str(uri))
-        try:
-            yield stream
-        finally:
-            stream.close()
-    else:
-        with open(uri, 'rb') as stream:
-            yield stream
-
-
-@contextmanager
-def _open_text_uri(uri, encoding='utf-8'):
-    with _open_binary_uri(uri) as stream:
-        text_stream = io.TextIOWrapper(stream, encoding=encoding)
-        try:
-            yield text_stream
-        finally:
-            text_stream.close()
-
-
-def _require_rdkit(reader_name):
-    try:
-        from rdkit import Chem
-    except ImportError as exc:
-        raise ImportError(
-            f"RDKit is required for '{reader_name}' input. Install rdkit to use this reader."
-        ) from exc
-    return Chem
-
-
-def _require_torch_geometric():
-    try:
-        import torch
-        from torch_geometric.data import Batch, Data
-        from torch_geometric.utils import to_networkx
-    except ImportError as exc:
-        raise ImportError(
-            "torch and torch_geometric are required for 'pyg_pt' input. "
-            "Install both packages to use this reader."
-        ) from exc
-    return torch, Data, Batch, to_networkx
-
-
-def _atom_to_discrete_label(atom):
-    return (
-        atom.GetAtomicNum(),
-        atom.GetFormalCharge(),
-        int(atom.GetChiralTag()),
-        atom.GetTotalNumHs(),
-        int(atom.GetHybridization()),
-        int(atom.GetIsAromatic()),
-    )
-
-
-def _bond_to_discrete_label(bond):
-    return (
-        str(bond.GetBondType()),
-        int(bond.GetStereo()),
-        int(bond.GetIsConjugated()),
-        int(bond.IsInRing()),
-    )
-
-
-def _rdkit_mol_to_nx_graph(mol):
-    graph = nx.Graph()
-
-    for atom in mol.GetAtoms():
-        graph.add_node(atom.GetIdx(), label=_atom_to_discrete_label(atom))
-
-    for bond in mol.GetBonds():
-        graph.add_edge(
-            bond.GetBeginAtomIdx(),
-            bond.GetEndAtomIdx(),
-            label=_bond_to_discrete_label(bond),
-        )
-
-    return graph
-
-
-def _hashable_value(value):
-    if hasattr(value, 'tolist'):
-        value = value.tolist()
-    if isinstance(value, np.ndarray):
-        value = value.tolist()
-    if isinstance(value, list):
-        return tuple(_hashable_value(item) for item in value)
-    if isinstance(value, tuple):
-        return tuple(_hashable_value(item) for item in value)
-    if isinstance(value, dict):
-        return tuple(sorted((key, _hashable_value(val)) for key, val in value.items()))
-    return value
-
-
-def _extract_smiles_and_name(line):
-    stripped = line.strip()
-    if not stripped or stripped.startswith('#'):
-        return None, None
-
-    lowered = stripped.lower()
-    if lowered == 'smiles' or lowered.startswith('smiles,') or lowered.startswith('smiles\t') or lowered.startswith('smiles '):
-        return None, None
-
-    if ',' in stripped:
-        parts = [part.strip() for part in stripped.split(',')]
-        smiles = parts[0].strip('"')
-        name = parts[1].strip('"') if len(parts) > 1 and parts[1] else None
-        return smiles, name
-
-    parts = stripped.split()
-    smiles = parts[0]
-    name = parts[1] if len(parts) > 1 else None
-    return smiles, name
-
-
-def _iter_smiles_graphs(uri):
-    return _iter_smiles_graphs_with_stats(uri, stats=None)
-
-
-def _iter_smiles_graphs_with_stats(uri, stats=None):
-    Chem = _require_rdkit('smiles')
-
-    with _open_text_uri(uri) as stream:
-        for line_number, line in enumerate(stream, start=1):
-            smiles, name = _extract_smiles_and_name(line)
-            if not smiles:
-                continue
-            mol = Chem.MolFromSmiles(smiles)
-            if mol is None:
-                if stats is not None:
-                    stats['errors'] += 1
-                continue
-
-            graph = _rdkit_mol_to_nx_graph(mol)
-            graph.graph['smiles'] = smiles
-            graph.graph['source_uri'] = str(uri)
-            graph.graph['source_line'] = line_number
-            if name is not None:
-                graph.graph['name'] = name
-            yield graph
-
-
-def _iter_sdf_graphs(uri):
-    return _iter_sdf_graphs_with_stats(uri, stats=None)
-
-
-def _iter_sdf_graphs_with_stats(uri, stats=None):
-    Chem = _require_rdkit('sdf')
-
-    with _open_binary_uri(uri) as stream:
-        supplier = Chem.ForwardSDMolSupplier(stream)
-        for mol in supplier:
-            if mol is None:
-                if stats is not None:
-                    stats['errors'] += 1
-                continue
-
-            graph = _rdkit_mol_to_nx_graph(mol)
-            if mol.HasProp('_Name'):
-                graph.graph['name'] = mol.GetProp('_Name')
-            graph.graph['source_uri'] = str(uri)
-            yield graph
-
-
-def _iter_pyg_pt_graphs(uri):
-    return _iter_pyg_pt_graphs_with_stats(uri, stats=None)
-
-
-def _iter_pyg_pt_graphs_with_stats(uri, stats=None):
-    torch, Data, Batch, to_networkx = _require_torch_geometric()
-
-    with _open_binary_uri(uri) as stream:
-        payload = io.BytesIO(stream.read())
-
-    obj = torch.load(payload, map_location='cpu')
-    if isinstance(obj, Batch):
-        data_objects = obj.to_data_list()
-    elif isinstance(obj, Data):
-        data_objects = [obj]
-    else:
-        try:
-            data_objects = list(obj)
-        except TypeError as exc:
-            raise TypeError(
-                "The 'pyg_pt' reader expects a torch_geometric Data, Batch, or iterable of Data objects."
-            ) from exc
-
-    for data in data_objects:
-        if not isinstance(data, Data):
-            raise TypeError("The 'pyg_pt' reader expects each item to be a torch_geometric.data.Data instance.")
-
-        keys = list(data.keys()) if callable(getattr(data, 'keys', None)) else list(data.keys)
-        node_attrs = [key for key in keys if key not in {'batch', 'ptr'} and data.is_node_attr(key)]
-        edge_attrs = [key for key in keys if data.is_edge_attr(key)]
-        graph = to_networkx(
-            data,
-            node_attrs=node_attrs,
-            edge_attrs=edge_attrs,
-            to_undirected=True,
-        )
-
-        for node_idx in graph.nodes():
-            if 'label' not in graph.nodes[node_idx]:
-                if 'x' in graph.nodes[node_idx]:
-                    graph.nodes[node_idx]['label'] = _hashable_value(graph.nodes[node_idx]['x'])
-                else:
-                    graph.nodes[node_idx]['label'] = 0
-            else:
-                graph.nodes[node_idx]['label'] = _hashable_value(graph.nodes[node_idx]['label'])
-
-        for u, v in graph.edges():
-            if 'label' not in graph.edges[u, v]:
-                if 'edge_attr' in graph.edges[u, v]:
-                    graph.edges[u, v]['label'] = _hashable_value(graph.edges[u, v]['edge_attr'])
-                else:
-                    graph.edges[u, v]['label'] = 0
-            else:
-                graph.edges[u, v]['label'] = _hashable_value(graph.edges[u, v]['label'])
-
-        graph.graph['source_uri'] = str(uri)
-        yield graph
-
-
-_BUILTIN_READERS = {
-    'smiles': _iter_smiles_graphs_with_stats,
-    'sdf': _iter_sdf_graphs_with_stats,
-    'pyg_pt': _iter_pyg_pt_graphs_with_stats,
-}
-
-
-def _validate_graph(graph):
-    if not isinstance(graph, nx.Graph):
-        raise TypeError(
-            "Readers must yield networkx.Graph instances. "
-            f"Received {type(graph).__name__}."
-        )
-    return graph
-
-
-def _validate_limit(limit):
-    if limit is None:
-        return
-
-    if isinstance(limit, bool):
-        raise ValueError("limit must be None, a non-negative integer, or a float strictly between 0 and 1.")
-
-    if isinstance(limit, Integral):
-        if limit < 0:
-            raise ValueError("Integer limit must be non-negative.")
-        return
-
-    if isinstance(limit, Real):
-        if not 0 < float(limit) < 1:
-            raise ValueError("Float limit must be strictly between 0 and 1.")
-        return
-
-    raise ValueError("limit must be None, a non-negative integer, or a float strictly between 0 and 1.")
-
-
-def _make_rng(random_state):
-    if isinstance(random_state, np.random.Generator):
-        return random_state
-    return np.random.default_rng(random_state)
-
-
-def _apply_limit(graph_iterable, limit=None, random_state=None):
-    _validate_limit(limit)
-
-    if limit is None:
-        yield from graph_iterable
-        return
-
-    if isinstance(limit, Integral):
-        remaining = int(limit)
-        for graph in graph_iterable:
-            if remaining <= 0:
-                break
-            yield graph
-            remaining -= 1
-        return
-
-    probability = float(limit)
-    rng = _make_rng(random_state)
-    for graph in graph_iterable:
-        if rng.random() < probability:
-            yield graph
-
-
-def _iter_loaded_graphs(uri, source_type, reader=None, limit=None, random_state=None, verbose=False, mode='load', log_every=100, log_stream=None):
-    stats = {
-        'seen': 0,
-        'loaded': 0,
-        'errors': 0,
-        'verbose': verbose,
-        'mode': mode,
-        'stream': sys.stderr if log_stream is None else log_stream,
-    }
-    start_time = time.perf_counter()
-    stats['timer'] = lambda: time.perf_counter() - start_time
-
-    if reader is None:
-        normalized_type = str(source_type).strip().lower()
-        if normalized_type not in _BUILTIN_READERS:
-            available = ', '.join(sorted(_BUILTIN_READERS))
-            raise ValueError(f"Unsupported source type '{source_type}'. Available built-in types: {available}.")
-        graph_iterable = _BUILTIN_READERS[normalized_type](uri, stats=stats)
-    else:
-        graph_iterable = reader(uri)
-
-    validated_graphs = (_validate_graph(graph) for graph in graph_iterable)
-    limited_graphs = _apply_limit(validated_graphs, limit=limit, random_state=random_state)
-
-    try:
-        for graph in limited_graphs:
-            stats['seen'] += 1
-            stats['loaded'] += 1
-            if verbose and (stats['loaded'] == 1 or stats['loaded'] % log_every == 0):
-                _emit_stream_stats(stats, final=False)
-            yield graph
-    finally:
-        if verbose:
-            _emit_stream_stats(stats, final=True)
-
-
-def _batched_graphs(graph_iterable, batch_size):
-    if not isinstance(batch_size, Integral) or isinstance(batch_size, bool) or batch_size <= 0:
-        raise ValueError("batch_size must be a positive integer.")
-
-    batch = []
-    for graph in graph_iterable:
-        batch.append(graph)
-        if len(batch) == batch_size:
-            yield batch
-            batch = []
-
-    if batch:
-        yield batch
-
-
-def _format_stream_stats(stats):
-    elapsed = max(stats['timer'](), 1e-12)
-    loaded = stats['loaded']
-    seen = stats['seen']
-    errors = stats['errors']
-    sec_per_graph = elapsed / loaded if loaded else float('nan')
-    graphs_per_sec = loaded / elapsed if loaded else 0.0
-    return (
-        f"seen={seen:>7d}  "
-        f"loaded={loaded:>7d}  "
-        f"errors={errors:>5d}  "
-        f"elapsed={elapsed:>8.2f}s  "
-        f"graphs/sec={graphs_per_sec:>8.2f}  "
-        f"sec/graph={sec_per_graph:>10.6f}"
-    )
-
-
-def _emit_stream_stats(stats, final=False):
-    if not stats['verbose']:
-        return
-
-    prefix = "[load_from]" if stats['mode'] == 'load' else "[stream_from]"
-    stage = "final" if final else "progress"
-    print(f"{prefix} {stage}: {_format_stream_stats(stats)}", file=stats['stream'])
-    stats['stream'].flush()
 
 # ------------------------
 # Accumulator Classes
@@ -516,57 +82,86 @@ class DictAccumulator:
     def get(self):
         return self.data
 
-def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator, use_edges_as_features=True):
-    # Weighted: inline computation of weight using the Gaussian function.
-    node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=distance)
-    dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
 
-    if use_edges_as_features:
-        for target_node, dist in node_idxs_to_dist_dict.items():
-            w = gaussian_weight(dist, sigma)
-            for neighbor in graph.neighbors(target_node):
-                triplet_hash = graph.edges[target_node, neighbor].get('triplet_hash', None)
-                if triplet_hash is not None:
-                    distance_triplet_hash = hash_value(hash_sequence([dist, triplet_hash]), nbits=nbits)
-                    accumulator.add(distance_triplet_hash, w)
+def _edge_key(u, v):
+    return tuple(sorted((u, v)))
 
-    for code_i in graph.nodes[node_idx]['rooted_graph_hash']:
-        for dist, node_idxs in sorted(dist_to_node_idxs_dict.items()):
-            w = gaussian_weight(dist, sigma)
-            for curr_node_idx in node_idxs:
-                if connector > 0:
-                    union_of_shortest_paths = set()
-                    shortest_paths = list(nx.all_shortest_paths(graph, source=node_idx, target=curr_node_idx))
-                    for path in shortest_paths:
-                        union_of_shortest_paths.update(path)
-                for connect in range(connector + 1):
-                    for code_j in graph.nodes[curr_node_idx]['rooted_graph_hash']:
-                        if connect == 0:
-                            paired_code = hash_sequence([code_i, dist, code_j])
-                        else:
-                            union_of_shortest_paths_code = hash_set([
-                                    hash_sequence([node_idxs_to_dist_dict[node], graph.nodes[node]['rooted_graph_hash'][connect - 1]])
-                                    for node in union_of_shortest_paths
-                                ])
-                            paired_code = hash_sequence([code_i, dist, code_j, union_of_shortest_paths_code])
-                        paired_code = hash_value(paired_code, nbits=nbits)
-                        accumulator.add(paired_code, w)
-    
-def get_structural_node_vectors(original_graph, radius, distance, connector, nbits, degree_threshold=None, sigma=None, use_edges_as_features=True):
-    """
-    Generates a feature vector for each node in the graph.
-    Uses an unweighted (faster) version if sigma is None, in which the weight is inlined as 1.0.
-    If sigma is provided, the Gaussian weighted variant is used.
-    """
+
+def _node_ball(graph, center, radius):
+    if radius < 0:
+        return set()
+    return set(nx.single_source_shortest_path_length(graph, center, cutoff=radius).keys())
+
+
+def _shortest_path_edge_union(graph, source, target):
+    shortest_paths = list(nx.all_shortest_paths(graph, source=source, target=target))
+    nodes = set()
+    edges = set()
+    for path in shortest_paths:
+        nodes.update(path)
+        edges.update(_edge_key(u, v) for u, v in zip(path, path[1:]))
+    return nodes, edges
+
+
+def _induced_subgraph_from_occurrence(original_graph, occurrence):
+    subgraph = original_graph.__class__()
+    for key, value in original_graph.graph.items():
+        subgraph.graph[key] = copy.deepcopy(value)
+    for node in sorted(occurrence['source_node_ids']):
+        subgraph.add_node(node, **copy.deepcopy(original_graph.nodes[node]))
+        subgraph.nodes[node]['original_node_id'] = node
+    for u, v in occurrence['source_edge_ids']:
+        if original_graph.has_edge(u, v):
+            subgraph.add_edge(u, v, **copy.deepcopy(original_graph.edges[u, v]))
+            subgraph.edges[u, v]['original_edge'] = _edge_key(u, v)
+    subgraph.graph['source_graph_index'] = occurrence['source_graph_index']
+    subgraph.graph['feature_id'] = occurrence['feature_id']
+    subgraph.graph['feature_kind'] = occurrence['feature_kind']
+    subgraph.graph['raw_signature'] = occurrence['raw_signature']
+    subgraph.graph['root_node'] = occurrence['root_node']
+    subgraph.graph['target_node'] = occurrence['target_node']
+    return subgraph
+
+
+class _FeatureArchiveCollector:
+    def __init__(self, original_graph, graph_index):
+        self.original_graph = original_graph
+        self.graph_index = graph_index
+        self.archive = defaultdict(list)
+
+    def add(
+        self,
+        feature_id,
+        raw_signature,
+        feature_kind,
+        root_node,
+        target_node,
+        source_node_ids,
+        source_edge_ids,
+    ):
+        occurrence = {
+            'feature_id': feature_id,
+            'raw_signature': raw_signature,
+            'feature_kind': feature_kind,
+            'source_graph_index': self.graph_index,
+            'root_node': root_node,
+            'target_node': target_node,
+            'source_node_ids': tuple(sorted(source_node_ids)),
+            'source_edge_ids': tuple(sorted(_edge_key(u, v) for u, v in source_edge_ids)),
+        }
+        occurrence['subgraph'] = _induced_subgraph_from_occurrence(self.original_graph, occurrence)
+        self.archive[feature_id].append(occurrence)
+
+
+def _prepare_structural_graph(original_graph, radius, connector, degree_threshold=None):
     graph = original_graph.copy()
     ensure_graph_labels(graph)
-    
-    # Precompute node and edge hashes.
+
     for node_idx in graph.nodes():
         graph.nodes[node_idx]['node_label_hash'] = _hash(graph.nodes[node_idx]['label'])
         graph.nodes[node_idx]['node_hash'] = node_hash(node_idx, graph)
     precompute_edge_triplet_hashes(graph)
-    
+
     cutoff = max(radius, connector)
     for node_idx in graph.nodes():
         graph.nodes[node_idx]['rooted_graph_hash'] = np.zeros(cutoff + 1, dtype=int)
@@ -574,7 +169,112 @@ def get_structural_node_vectors(original_graph, radius, distance, connector, nbi
         effective_cutoff = 0 if degree_threshold is not None and degree > degree_threshold else cutoff
         for r, radius_r_rooted_graph_hash in enumerate(rooted_graph_hashes(node_idx, graph, radius=effective_cutoff)):
             graph.nodes[node_idx]['rooted_graph_hash'][r] = radius_r_rooted_graph_hash
-            
+    return graph
+
+
+def _connector_provenance(graph, node_idxs_to_dist_dict, union_of_shortest_paths, connect):
+    if connect <= 0:
+        return set(union_of_shortest_paths), set()
+
+    provenance_nodes = set(union_of_shortest_paths)
+    provenance_edges = set(_edge_key(u, v) for u, v in zip(sorted(union_of_shortest_paths), sorted(union_of_shortest_paths)[1:]))
+    # Replace the artificial sorted-path edges with actual shortest-path union edges.
+    provenance_edges = set()
+    for path_node in union_of_shortest_paths:
+        provenance_nodes.update(_node_ball(graph, path_node, connect - 1))
+    for u in provenance_nodes:
+        for v in graph.neighbors(u):
+            if v in provenance_nodes:
+                provenance_edges.add(_edge_key(u, v))
+    union_signature = hash_set([
+        hash_sequence([node_idxs_to_dist_dict[node], graph.nodes[node]['rooted_graph_hash'][connect - 1]])
+        for node in union_of_shortest_paths
+    ])
+    return provenance_nodes, provenance_edges, union_signature
+
+
+def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator, use_edges_as_features=True, archive_collector=None):
+    # Weighted: inline computation of weight using the Gaussian function.
+    node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=distance)
+    dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
+
+    if use_edges_as_features:
+        for target_node, dist in node_idxs_to_dist_dict.items():
+            w = gaussian_weight(dist, sigma)
+            path_nodes, path_edges = _shortest_path_edge_union(graph, node_idx, target_node)
+            for neighbor in graph.neighbors(target_node):
+                triplet_hash = graph.edges[target_node, neighbor].get('triplet_hash', None)
+                if triplet_hash is not None:
+                    raw_signature = hash_sequence([dist, triplet_hash])
+                    distance_triplet_hash = hash_value(raw_signature, nbits=nbits)
+                    accumulator.add(distance_triplet_hash, w)
+                    if archive_collector is not None:
+                        source_node_ids = set(path_nodes)
+                        source_node_ids.update({target_node, neighbor})
+                        source_edge_ids = set(path_edges)
+                        source_edge_ids.add(_edge_key(target_node, neighbor))
+                        archive_collector.add(
+                            feature_id=distance_triplet_hash,
+                            raw_signature=raw_signature,
+                            feature_kind='edge_triplet',
+                            root_node=node_idx,
+                            target_node=target_node,
+                            source_node_ids=source_node_ids,
+                            source_edge_ids=source_edge_ids,
+                        )
+
+    for radius_i, code_i in enumerate(graph.nodes[node_idx]['rooted_graph_hash']):
+        for dist, node_idxs in sorted(dist_to_node_idxs_dict.items()):
+            w = gaussian_weight(dist, sigma)
+            for curr_node_idx in node_idxs:
+                union_of_shortest_paths = set()
+                union_path_edges = set()
+                if connector > 0:
+                    union_of_shortest_paths, union_path_edges = _shortest_path_edge_union(graph, node_idx, curr_node_idx)
+                for connect in range(connector + 1):
+                    for radius_j, code_j in enumerate(graph.nodes[curr_node_idx]['rooted_graph_hash']):
+                        source_node_ids = _node_ball(graph, node_idx, radius_i)
+                        source_node_ids.update(_node_ball(graph, curr_node_idx, radius_j))
+                        source_edge_ids = set()
+                        for u in source_node_ids:
+                            for v in graph.neighbors(u):
+                                if v in source_node_ids:
+                                    source_edge_ids.add(_edge_key(u, v))
+
+                        if connect == 0:
+                            raw_signature = hash_sequence([code_i, dist, code_j])
+                        else:
+                            connector_nodes, connector_edges, union_of_shortest_paths_code = _connector_provenance(
+                                graph,
+                                node_idxs_to_dist_dict,
+                                union_of_shortest_paths,
+                                connect,
+                            )
+                            source_node_ids.update(connector_nodes)
+                            source_edge_ids.update(connector_edges)
+                            source_edge_ids.update(union_path_edges)
+                            raw_signature = hash_sequence([code_i, dist, code_j, union_of_shortest_paths_code])
+
+                        paired_code = hash_value(raw_signature, nbits=nbits)
+                        accumulator.add(paired_code, w)
+                        if archive_collector is not None:
+                            archive_collector.add(
+                                feature_id=paired_code,
+                                raw_signature=raw_signature,
+                                feature_kind='paired_rooted_subgraph',
+                                root_node=node_idx,
+                                target_node=curr_node_idx,
+                                source_node_ids=source_node_ids,
+                                source_edge_ids=source_edge_ids,
+                            )
+
+def get_structural_node_vectors(original_graph, radius, distance, connector, nbits, degree_threshold=None, sigma=None, use_edges_as_features=True):
+    """
+    Generates a feature vector for each node in the graph.
+    Uses an unweighted (faster) version if sigma is None, in which the weight is inlined as 1.0.
+    If sigma is provided, the Gaussian weighted variant is used.
+    """
+    graph = _prepare_structural_graph(original_graph, radius, connector, degree_threshold)
     node_vectors = []
     if sigma is None:
         # Unweighted branch: use ListAccumulator and inline constant weight.
@@ -604,6 +304,30 @@ def get_structural_node_vectors(original_graph, radius, distance, connector, nbi
             node_vectors.append(node_vector)
     
     return sp.sparse.vstack(node_vectors)
+
+
+def get_feature_archive(original_graph, graph_index, radius, distance, connector, nbits, degree_threshold=None, sigma=None, use_edges_as_features=True):
+    """
+    Replays the structural hashing path and archives all occurrences per final hashed feature id.
+    """
+    graph = _prepare_structural_graph(original_graph, radius, connector, degree_threshold)
+    archive_collector = _FeatureArchiveCollector(original_graph, graph_index)
+
+    for node_idx in graph.nodes():
+        accumulator = DictAccumulator() if sigma is not None else ListAccumulator()
+        _process_node_features(
+            node_idx,
+            graph,
+            distance,
+            connector,
+            nbits,
+            sigma,
+            accumulator,
+            use_edges_as_features,
+            archive_collector=archive_collector,
+        )
+
+    return archive_collector.archive
 
 def get_node_attribute_matrix(original_graph, node_attribute_key):
     """
@@ -1232,8 +956,9 @@ class NSPPK(BaseEstimator, TransformerMixin):
         Returns:
             list of networkx.Graph: Materialized graphs.
         """
+        _sync_graph_io_hooks()
         return list(
-            _iter_loaded_graphs(
+            _graph_io._iter_loaded_graphs(
                 uri,
                 type,
                 reader=reader,
@@ -1263,7 +988,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
             numpy.ndarray or scipy.sparse.csr_matrix: Transformed batches produced by ``self.transform``.
         """
         check_is_fitted(self.base_nsppk, 'is_fitted_')
-        graph_iterable = _iter_loaded_graphs(
+        _sync_graph_io_hooks()
+        graph_iterable = _graph_io._iter_loaded_graphs(
             uri,
             type,
             reader=reader,
@@ -1272,7 +998,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
             verbose=verbose,
             mode='stream',
         )
-        for graph_batch in _batched_graphs(graph_iterable, batch_size):
+        for graph_batch in _graph_io._batched_graphs(graph_iterable, batch_size):
             yield self.transform(graph_batch)
 
     def transform(self, graphs):
@@ -1515,7 +1241,8 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             list of numpy.ndarray or list of scipy.sparse.csr_matrix: Transformed batches produced by ``self.transform``.
         """
         check_is_fitted(self.nsppk.base_nsppk, 'is_fitted_')
-        graph_iterable = _iter_loaded_graphs(
+        _sync_graph_io_hooks()
+        graph_iterable = _graph_io._iter_loaded_graphs(
             uri,
             type,
             reader=reader,
@@ -1524,7 +1251,7 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             verbose=verbose,
             mode='stream',
         )
-        for graph_batch in _batched_graphs(graph_iterable, batch_size):
+        for graph_batch in _graph_io._batched_graphs(graph_iterable, batch_size):
             yield self.transform(graph_batch)
 
     def transform(self, graphs):
@@ -1567,165 +1294,3 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             nodes_data_mtx_list = [mtx.todense().A for mtx in nodes_data_mtx_list]
 
         return nodes_data_mtx_list
-
-
-class ImportanceNSPPK(object):
-    """
-    A class to visualize node importance in graphs using feature importance derived from an ensemble classifier.
-
-    This class leverages the NSPPK (Neighborhood Subgraph Pairwise Path Kernel) method
-    to decompose graphs into substructures and vectorize them. It then uses an ExtraTreesClassifier
-    to compute feature importances, which are used to assign importance weights to nodes in the graphs.
-
-    Attributes:
-        node_nsppk (object): An instance of NSPPK or a similar class responsible for graph decomposition and vectorization.
-        importance_key (str): The key under which node importance weights will be stored in the graph's node attributes.
-        n_iter (int): Number of iterations for training the classifier to ensure stable feature importance estimates.
-        n_estimators (int): Number of trees in the ExtraTreesClassifier.
-        quantile (float): Quantile threshold for filtering out low-importance features.
-        parallel (bool): Whether to utilize parallel processing during classifier training.
-        normalize (bool): Whether to normalize node and edge weights to [0,1] range.
-        feature_importance_vector (np.ndarray): Normalized feature importance scores after processing.
-    """
-    
-    def __init__(self, node_nsppk, importance_key='att', n_iter=10, n_estimators=100, quantile=0.5, parallel=True, normalize=True):
-        """
-        Initializes the ImportanceNSPPK instance with specified parameters.
-
-        Args:
-            node_nsppk (object): An instance responsible for graph decomposition and vectorization (e.g., NSPPK).
-            importance_key (str, optional): The key for storing node importance in graph attributes. Defaults to 'att'.
-            n_iter (int, optional): Number of iterations for classifier training. Defaults to 10.
-            n_estimators (int, optional): Number of trees in the ExtraTreesClassifier. Defaults to 100.
-            quantile (float, optional): Quantile threshold for filtering feature importances. Defaults to 0.5.
-            parallel (bool, optional): Whether to run classifier training in parallel. Defaults to True.
-            normalize (bool, optional): Whether to normalize weights to [0,1]. Defaults to True.
-        """
-        self.node_nsppk = node_nsppk
-        self.importance_key = importance_key
-        self.n_iter = n_iter
-        self.n_estimators = n_estimators
-        self.quantile = quantile
-        self.parallel = parallel
-        self.normalize = normalize
-        self.feature_importance_vector = None  # To store the computed normalized feature importance scores
-
-    def fit(self, graphs, targets=None):
-        """
-        Fits the model by computing feature importances from the provided graphs and corresponding target labels.
-
-        This method vectorizes the input graphs, aggregates node features, and trains an ExtraTreesClassifier
-        multiple times to obtain stable estimates of feature importances. It then processes these importances
-        by averaging, subtracting the standard deviation, thresholding, and normalizing.
-
-        Args:
-            graphs (list): A list of graph objects to be vectorized and used for training.
-            targets (array-like, optional): Target labels corresponding to each graph. Required for supervised training.
-
-        Returns:
-            self: Returns the instance itself to allow method chaining.
-        """
-        # Vectorize the graphs using the provided NSPPK instance
-        node_feature_mtx_list = self.node_nsppk.fit_transform(graphs)
-        
-        # Aggregate node features for each graph by summing across nodes
-        X = np.vstack([node_feature_mtx.sum(axis=0) for node_feature_mtx in node_feature_mtx_list])
-
-        feature_importances = []  # List to store feature importances from each iteration
-
-        # Perform multiple iterations to compute stable feature importances
-        for it in range(self.n_iter):
-            # Split the data into training and testing sets with a fixed random state for reproducibility
-            train_X, test_X, train_targets, test_targets = train_test_split(
-                X, targets, train_size=0.7, random_state=it+1
-            )
-            
-            # Initialize and train the ExtraTreesClassifier
-            clf = ExtraTreesClassifier(
-                n_estimators=self.n_estimators, 
-                n_jobs=-1 if self.parallel else None,
-                random_state=it+1  # Ensure reproducibility across iterations
-            ).fit(train_X, train_targets)
-            
-            # Append the feature importances from the trained classifier
-            feature_importances.append(clf.feature_importances_)
-        
-        # Convert the list of feature importances into a NumPy matrix for statistical processing
-        feature_importances_mtx = np.vstack(feature_importances)
-        
-        # Compute the mean and standard deviation of feature importances across all iterations
-        mean_importances = np.mean(feature_importances_mtx, axis=0)
-        std_importances = np.std(feature_importances_mtx, axis=0)
-        
-        # Calculate the adjusted feature importance by subtracting the standard deviation from the mean
-        adjusted_importances = mean_importances - std_importances
-        
-        # Set any negative importance values to zero to ensure non-negativity
-        adjusted_importances[adjusted_importances < 0] = 0
-        
-        # Apply a quantile threshold to filter out features with low importance
-        threshold = np.quantile(adjusted_importances, self.quantile)
-        adjusted_importances[adjusted_importances < threshold] = 0
-        
-        # Normalize the feature importance vector by dividing by its maximum value to scale between 0 and 1
-        max_importance = np.max(adjusted_importances)
-        if (max_importance > 0):
-            self.feature_importance_vector = adjusted_importances / max_importance
-        else:
-            self.feature_importance_vector = adjusted_importances  # Remain zero if max is zero
-        
-        return self  # Allow method chaining
-
-    def transform(self, graphs):
-        """
-        Transforms the input graphs by assigning normalized importance weights to each node based on feature importances.
-
-        This method vectorizes the nodes of each graph, computes weights by combining node features with the
-        precomputed feature importance vector, and normalizes these weights to assign importance scores to nodes.
-        Additionally, edge weights are assigned based on the product of the connected nodes' importance scores.
-
-        Args:
-            graphs (list): A list of graph objects to be transformed with node and edge importance weights.
-
-        Returns:
-            out_graphs (list): A list of transformed graph objects with updated node and edge importance attributes.
-        """
-        # Vectorize the nodes of the graphs using the provided NSPPK instance
-        node_feature_mtx_list = self.node_nsppk.transform(graphs)
-        
-        out_graphs = []  # List to store the transformed graphs
-
-        # Iterate over each graph and its corresponding node feature matrix
-        for graph, node_feature_mtx in zip(graphs, node_feature_mtx_list):
-            out_graph = graph.copy()  # Create a copy of the graph to avoid modifying the original
-            
-            # Compute the weights by multiplying node features with the feature importance vector
-            weights = node_feature_mtx * self.feature_importance_vector
-            
-            # Sum the weights across all feature dimensions for each node to obtain a single weight per node
-            weights = np.sum(weights, axis=1)
-            
-            if self.normalize:
-                # Normalize the weights by the maximum weight to scale between 0 and 1
-                max_weight = np.max(weights) if np.max(weights) > 0 else 1
-                normalized_weights = weights / max_weight
-            else:
-                normalized_weights = weights
-            
-            # Assign the normalized weight to each node in the graph
-            for i, weight in enumerate(normalized_weights):
-                out_graph.nodes[i][self.importance_key] = weight
-            
-            # Assign edge weights based on the product of the connected nodes' importance scores
-            for u, v in out_graph.edges():
-                out_graph.edges[u, v][self.importance_key] = out_graph.nodes[u][self.importance_key] * out_graph.nodes[v][self.importance_key]
-        
-            for u, node_feature in zip(out_graph.nodes(), node_feature_mtx):
-                out_graph.nodes[u]['node_feature'] = node_feature
-
-            for u, v in out_graph.edges():
-                out_graph.edges[u, v]['edge_feature'] = out_graph.nodes[u]['node_feature'] + out_graph.nodes[v]['node_feature']
-
-            out_graphs.append(out_graph)  # Add the transformed graph to the output list
-        
-        return out_graphs  # Return the list of transformed graphs

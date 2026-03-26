@@ -23,11 +23,11 @@ from nsppk import NSPPK
 
 The repository includes a few runnable notebooks that cover the main usage patterns:
 
-- `NSPPK Demo.ipynb`: synthetic graph-sequence walkthrough for graph-level NSPPK behavior
-- `ImportanceNSPPK Demo.ipynb`: synthetic two-class dataset showing node and edge importance with `NodeNSPPK` + `ImportanceNSPPK`
-- `NSPPK Streaming Benchmark.ipynb`: source-loading and streaming examples
-- `NSPPK nbits Benchmark.ipynb`: predictive performance vs hashed feature dimension on HIV
-- `NSPPK HIV Speed Benchmark.ipynb`: runtime scaling on HIV graphs
+- `notebooks/Demo.ipynb`: synthetic graph-sequence walkthrough for graph-level NSPPK behavior
+- `notebooks/Importance Demo.ipynb`: synthetic two-class dataset showing node and edge importance with `NodeNSPPK` + `ImportanceNSPPK`
+- `notebooks/Streaming Benchmark.ipynb`: source-loading and streaming examples
+- `notebooks/Molecular Graph nbits Benchmark.ipynb`: predictive performance vs hashed feature dimension on molecular graphs
+- `notebooks/Molecular Graph Speed Benchmark.ipynb`: runtime scaling on molecular graphs
 
 ## Loading And Streaming Graphs
 
@@ -191,7 +191,8 @@ predictions = pipeline.predict(test_graphs)
 `ImportanceNSPPK` builds on `NodeNSPPK` to assign supervised importance scores to nodes and edges. It first learns node-level NSPPK features, then fits an ensemble classifier over graph labels and projects the learned feature importances back onto each node.
 
 ```python
-from nsppk import NodeNSPPK, ImportanceNSPPK
+from importance_nsppk import ImportanceNSPPK
+from nsppk import NodeNSPPK
 
 node_encoder = NodeNSPPK(radius=1, distance=4, connector=0, nbits=12, dense=True, parallel=False)
 importance_model = ImportanceNSPPK(

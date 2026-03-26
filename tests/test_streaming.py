@@ -187,7 +187,7 @@ class StreamingIOTests(unittest.TestCase):
         self.assertEqual(len(graphs), 2)
         log_output = buffer.getvalue()
         self.assertIn("[load_from]", log_output)
-        self.assertIn("loaded=2", log_output)
+        self.assertRegex(log_output, r"loaded=\s*2")
 
     def test_invalid_limit_raises_value_error(self):
         vectorizer = nsppk.NSPPK(parallel=False, dense=False)

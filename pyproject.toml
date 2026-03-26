@@ -22,4 +22,5 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = ["nsppk"]
+package-dir = {"" = "src"}
+py-modules = ["nsppk", "importance_nsppk", "graph_hash", "graph_io", "utils"]
