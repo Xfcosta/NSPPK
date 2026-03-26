@@ -19,6 +19,16 @@ Then import it in Python with:
 from nsppk import NSPPK
 ```
 
+## Demo Notebooks
+
+The repository includes a few runnable notebooks that cover the main usage patterns:
+
+- `NSPPK Demo.ipynb`: synthetic graph-sequence walkthrough for graph-level NSPPK behavior
+- `ImportanceNSPPK Demo.ipynb`: synthetic two-class dataset showing node and edge importance with `NodeNSPPK` + `ImportanceNSPPK`
+- `NSPPK Streaming Benchmark.ipynb`: source-loading and streaming examples
+- `NSPPK nbits Benchmark.ipynb`: predictive performance vs hashed feature dimension on HIV
+- `NSPPK HIV Speed Benchmark.ipynb`: runtime scaling on HIV graphs
+
 ## Loading And Streaming Graphs
 
 NSPPK now exposes two source-ingestion helpers:
@@ -174,4 +184,28 @@ pipeline.fit(training_graphs, training_labels)
 
 # Predict on new data
 predictions = pipeline.predict(test_graphs)
+```
+
+## Node Importance
+
+`ImportanceNSPPK` builds on `NodeNSPPK` to assign supervised importance scores to nodes and edges. It first learns node-level NSPPK features, then fits an ensemble classifier over graph labels and projects the learned feature importances back onto each node.
+
+```python
+from nsppk import NodeNSPPK, ImportanceNSPPK
+
+node_encoder = NodeNSPPK(radius=1, distance=4, connector=0, nbits=12, dense=True, parallel=False)
+importance_model = ImportanceNSPPK(
+    node_nsppk=node_encoder,
+    importance_key="importance",
+    n_iter=6,
+    n_estimators=300,
+    quantile=0.7,
+    parallel=False,
+)
+
+importance_model.fit(graphs, labels)
+importance_graphs = importance_model.transform(graphs)
+
+# Per-node importance score
+importance_graphs[0].nodes[0]["importance"]
 ```
