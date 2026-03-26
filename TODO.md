@@ -10,25 +10,31 @@ This project is currently dominated by Python-side graph feature extraction work
   - Current code uses `hashlib.sha256` for every hashed object.
   - Feature hashing does not require cryptographic security.
   - Likely one of the easiest large wins.
+  - Evaluated and rejected for the current benchmark: replacing `sha256` with a cheaper structural hash hurt learning-curve quality.
+  - Final accepted state keeps the original `sha256`-based `_hash()` in [src/hash.py](/home/fabrizio/code/NSPPK/src/hash.py).
 
 - Remove `nx.all_shortest_paths()` from the inner loop in `_process_node_features()`.
   - Current code recomputes all shortest paths for many source/target pairs.
   - This is likely the single most expensive graph-algorithm call in the encoder.
   - Precompute predecessor maps from one BFS per source node and derive shortest-path unions from those instead.
+  - Done: replaced repeated `nx.all_shortest_paths()` calls with cached predecessor maps and derived shortest-path unions in [src/nsppk.py](/home/fabrizio/code/NSPPK/src/nsppk.py).
 
 - Reuse BFS results instead of recomputing them.
   - `rooted_graph_hashes()` runs `nx.single_source_shortest_path_length`.
   - `_process_node_features()` runs another `nx.single_source_shortest_path_length`.
   - Cache bounded BFS results per source node once per graph and reuse them in both places.
+  - Done: added a per-graph bounded BFS cache in [src/nsppk.py](/home/fabrizio/code/NSPPK/src/nsppk.py) and rewired `rooted_graph_hashes()`, `_process_node_features()`, and `_node_ball()` to reuse it.
 
 - Build CSR matrices directly instead of creating many `lil_matrix` objects.
   - `items_to_sparse_histogram()` and `weighted_sparse_histogram()` create a sparse matrix per node using LIL format.
   - Instead accumulate `rows`, `cols`, `data` arrays and build one CSR matrix per graph.
   - This should reduce allocator overhead and Python-side sparse mutation cost.
+  - Done: `get_structural_node_vectors()` now accumulates row entries directly and builds one CSR matrix per graph in [src/nsppk.py](/home/fabrizio/code/NSPPK/src/nsppk.py).
 
 - Avoid copying the entire graph in `get_structural_node_vectors()`.
   - `graph = original_graph.copy()` adds overhead for every graph.
   - Either cache temporary attributes in place and clean them up, or build a compact internal representation once.
+  - Partial: reduced repeated NetworkX node/edge/neighbor lookups by introducing a graph-local structural cache in [src/nsppk.py](/home/fabrizio/code/NSPPK/src/nsppk.py), but `original_graph.copy()` is still in place.
 
 ## Medium-Sized Refactors
 
@@ -137,10 +143,10 @@ This project is currently dominated by Python-side graph feature extraction work
 
 ## Suggested Implementation Order
 
-1. Replace SHA-256 hashing with a cheap integer hash.
-2. Cache BFS results per source node.
-3. Eliminate `nx.all_shortest_paths()` from the inner loop.
-4. Build CSR matrices directly.
-5. Reduce graph copying and repeated NetworkX lookups.
+1. Replace SHA-256 hashing with a cheap integer hash. Rejected for the benchmark; original `sha256` hash kept.
+2. Cache BFS results per source node. Done.
+3. Eliminate `nx.all_shortest_paths()` from the inner loop. Done.
+4. Build CSR matrices directly. Done.
+5. Reduce graph copying and repeated NetworkX lookups. Partially done: repeated lookups reduced via cache, graph copying still remains.
 6. Benchmark again.
 7. If still too slow, prototype a `rustworkx` or adjacency-array backend.

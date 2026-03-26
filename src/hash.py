@@ -1,8 +1,6 @@
 import hashlib
 from collections import defaultdict
 
-import networkx as nx
-
 
 def _hash(value):
     value_str = str(value)
@@ -51,13 +49,35 @@ def invert_dict(mydict):
     return reversed_dict
 
 
-def rooted_graph_hashes(node_idx, graph, radius=1):
-    node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=radius)
-    dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
+def rooted_graph_hashes(
+    node_idx,
+    graph,
+    radius=1,
+    node_idxs_to_dist_dict=None,
+    node_label_hashes=None,
+    node_hashes=None,
+):
+    if node_idxs_to_dist_dict is None:
+        raise ValueError("node_idxs_to_dist_dict must be provided for rooted_graph_hashes().")
+    if node_label_hashes is None:
+        node_label_hashes = {
+            curr_node_idx: graph.nodes[curr_node_idx]['node_label_hash']
+            for curr_node_idx in graph.nodes()
+        }
+    if node_hashes is None:
+        node_hashes = {
+            curr_node_idx: graph.nodes[curr_node_idx]['node_hash']
+            for curr_node_idx in graph.nodes()
+        }
+    dist_to_node_idxs_dict = invert_dict({
+        curr_node_idx: dist
+        for curr_node_idx, dist in node_idxs_to_dist_dict.items()
+        if dist <= radius
+    })
     iso_distance_codes_list = [
         hash_set([
-            graph.nodes[curr_node_idx]['node_label_hash']
-            if dist == 0 else graph.nodes[curr_node_idx]['node_hash']
+            node_label_hashes[curr_node_idx]
+            if dist == 0 else node_hashes[curr_node_idx]
             for curr_node_idx in node_idxs
         ])
         for dist, node_idxs in sorted(dist_to_node_idxs_dict.items())

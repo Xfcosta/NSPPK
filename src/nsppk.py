@@ -14,7 +14,7 @@ from sklearn.model_selection import train_test_split
 import multiprocessing_on_dill as mp
 
 import graph_io as _graph_io
-from graph_hash import (
+from hash import (
     _hash,
     edge_triplet_hash,
     hash_sequence,
@@ -68,6 +68,13 @@ def weighted_sparse_histogram(weighted_dict, nbits):
         mat[0, col] = value
     return mat
 
+
+def _append_sparse_row_entries(row_entries, row_idx, rows, cols, data):
+    for col_idx, value in row_entries.items():
+        rows.append(row_idx)
+        cols.append(col_idx)
+        data.append(value)
+
 def gaussian_weight(dist, sigma):
     if sigma is None:
         return 1.0
@@ -103,10 +110,89 @@ def _edge_key(u, v):
 def _node_ball(graph, center, radius):
     if radius < 0:
         return set()
+    bfs_cache = graph.graph.get('_bfs_cache')
+    if bfs_cache is not None:
+        return set(bfs_cache[center]['balls_by_radius'][radius])
     return set(nx.single_source_shortest_path_length(graph, center, cutoff=radius).keys())
 
 
+def _build_bfs_cache(graph, max_radius):
+    bfs_cache = {}
+    for node_idx in graph.nodes():
+        node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=max_radius)
+        dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
+        predecessors = nx.predecessor(graph, node_idx, cutoff=max_radius)
+        balls_by_radius = []
+        ball = set()
+        for radius in range(max_radius + 1):
+            ball.update(dist_to_node_idxs_dict.get(radius, []))
+            balls_by_radius.append(frozenset(ball))
+        bfs_cache[node_idx] = {
+            'node_idxs_to_dist_dict': node_idxs_to_dist_dict,
+            'dist_to_node_idxs_dict': dist_to_node_idxs_dict,
+            'predecessors': predecessors,
+            'balls_by_radius': tuple(balls_by_radius),
+            'shortest_path_union_cache': {},
+        }
+    return bfs_cache
+
+
+def _build_structural_cache(graph):
+    cache = {
+        'neighbors': {},
+        'degrees': {},
+        'node_label_hashes': {},
+        'node_hashes': {},
+        'edge_triplet_hashes': {},
+        'rooted_graph_hashes': {},
+    }
+    for node_idx in graph.nodes():
+        neighbors = tuple(graph.neighbors(node_idx))
+        cache['neighbors'][node_idx] = neighbors
+        cache['degrees'][node_idx] = len(neighbors)
+    return cache
+
+
+def _induced_edge_ids(source_node_ids, neighbors_by_node):
+    source_edge_ids = set()
+    for u in source_node_ids:
+        for v in neighbors_by_node[u]:
+            if v in source_node_ids:
+                source_edge_ids.add(_edge_key(u, v))
+    return source_edge_ids
+
+
 def _shortest_path_edge_union(graph, source, target):
+    bfs_cache = graph.graph.get('_bfs_cache')
+    if bfs_cache is not None:
+        source_cache = bfs_cache[source]
+        cached_union = source_cache['shortest_path_union_cache'].get(target)
+        if cached_union is not None:
+            return cached_union
+        predecessors = source_cache['predecessors']
+        if target not in predecessors:
+            result = (set(), set())
+            source_cache['shortest_path_union_cache'][target] = result
+            return result
+
+        nodes = set()
+        edges = set()
+        stack = [target]
+        seen = set()
+        while stack:
+            node = stack.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            nodes.add(node)
+            for predecessor in predecessors.get(node, []):
+                edges.add(_edge_key(predecessor, node))
+                stack.append(predecessor)
+
+        result = (nodes, edges)
+        source_cache['shortest_path_union_cache'][target] = result
+        return result
+
     shortest_paths = list(nx.all_shortest_paths(graph, source=source, target=target))
     nodes = set()
     edges = set()
@@ -166,22 +252,45 @@ class _FeatureArchiveCollector:
         self.archive[feature_id].append(occurrence)
 
 
-def _prepare_structural_graph(original_graph, radius, connector, degree_threshold=None):
+def _prepare_structural_graph(original_graph, radius, distance, connector, degree_threshold=None):
     graph = original_graph.copy()
     ensure_graph_labels(graph)
-
-    for node_idx in graph.nodes():
-        graph.nodes[node_idx]['node_label_hash'] = _hash(graph.nodes[node_idx]['label'])
-        graph.nodes[node_idx]['node_hash'] = node_hash(node_idx, graph)
-    precompute_edge_triplet_hashes(graph)
-
     cutoff = max(radius, connector)
+    bfs_cutoff = max(radius, connector, distance)
+    graph.graph['_bfs_cache'] = _build_bfs_cache(graph, bfs_cutoff)
+    graph.graph['_structural_cache'] = _build_structural_cache(graph)
+    structural_cache = graph.graph['_structural_cache']
+
     for node_idx in graph.nodes():
-        graph.nodes[node_idx]['rooted_graph_hash'] = np.zeros(cutoff + 1, dtype=int)
-        degree = graph.degree[node_idx]
+        node_label_hash = _hash(graph.nodes[node_idx]['label'])
+        structural_cache['node_label_hashes'][node_idx] = node_label_hash
+        graph.nodes[node_idx]['node_label_hash'] = node_label_hash
+    for node_idx in graph.nodes():
+        node_hash_value = node_hash(node_idx, graph)
+        structural_cache['node_hashes'][node_idx] = node_hash_value
+        graph.nodes[node_idx]['node_hash'] = node_hash_value
+    precompute_edge_triplet_hashes(graph)
+    for u, v in graph.edges():
+        structural_cache['edge_triplet_hashes'][_edge_key(u, v)] = graph.edges[u, v]['triplet_hash']
+
+    for node_idx in graph.nodes():
+        rooted_hashes = np.zeros(cutoff + 1, dtype=int)
+        graph.nodes[node_idx]['rooted_graph_hash'] = rooted_hashes
+        degree = structural_cache['degrees'][node_idx]
         effective_cutoff = 0 if degree_threshold is not None and degree > degree_threshold else cutoff
-        for r, radius_r_rooted_graph_hash in enumerate(rooted_graph_hashes(node_idx, graph, radius=effective_cutoff)):
-            graph.nodes[node_idx]['rooted_graph_hash'][r] = radius_r_rooted_graph_hash
+        node_bfs_cache = graph.graph['_bfs_cache'][node_idx]
+        for r, radius_r_rooted_graph_hash in enumerate(
+            rooted_graph_hashes(
+                node_idx,
+                graph,
+                radius=effective_cutoff,
+                node_idxs_to_dist_dict=node_bfs_cache['node_idxs_to_dist_dict'],
+                node_label_hashes=structural_cache['node_label_hashes'],
+                node_hashes=structural_cache['node_hashes'],
+            )
+        ):
+            rooted_hashes[r] = radius_r_rooted_graph_hash
+        structural_cache['rooted_graph_hashes'][node_idx] = rooted_hashes
     return graph
 
 
@@ -189,18 +298,19 @@ def _connector_provenance(graph, node_idxs_to_dist_dict, union_of_shortest_paths
     if connect <= 0:
         return set(union_of_shortest_paths), set()
 
+    structural_cache = graph.graph.get('_structural_cache', {})
+    neighbors_by_node = structural_cache.get('neighbors', {})
+    rooted_graph_hashes_by_node = structural_cache.get('rooted_graph_hashes', {})
+
     provenance_nodes = set(union_of_shortest_paths)
     provenance_edges = set(_edge_key(u, v) for u, v in zip(sorted(union_of_shortest_paths), sorted(union_of_shortest_paths)[1:]))
     # Replace the artificial sorted-path edges with actual shortest-path union edges.
     provenance_edges = set()
     for path_node in union_of_shortest_paths:
         provenance_nodes.update(_node_ball(graph, path_node, connect - 1))
-    for u in provenance_nodes:
-        for v in graph.neighbors(u):
-            if v in provenance_nodes:
-                provenance_edges.add(_edge_key(u, v))
+    provenance_edges = _induced_edge_ids(provenance_nodes, neighbors_by_node)
     union_signature = hash_set([
-        hash_sequence([node_idxs_to_dist_dict[node], graph.nodes[node]['rooted_graph_hash'][connect - 1]])
+        hash_sequence([node_idxs_to_dist_dict[node], rooted_graph_hashes_by_node[node][connect - 1]])
         for node in union_of_shortest_paths
     ])
     return provenance_nodes, provenance_edges, union_signature
@@ -208,15 +318,32 @@ def _connector_provenance(graph, node_idxs_to_dist_dict, union_of_shortest_paths
 
 def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator, use_edges_as_features=True, archive_collector=None):
     # Weighted: inline computation of weight using the Gaussian function.
-    node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=distance)
-    dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
+    structural_cache = graph.graph.get('_structural_cache', {})
+    neighbors_by_node = structural_cache.get('neighbors', {})
+    edge_triplet_hashes = structural_cache.get('edge_triplet_hashes', {})
+    rooted_graph_hashes_by_node = structural_cache.get('rooted_graph_hashes', {})
+    node_bfs_cache = graph.graph.get('_bfs_cache', {}).get(node_idx)
+    if node_bfs_cache is not None:
+        node_idxs_to_dist_dict = {
+            curr_node_idx: dist
+            for curr_node_idx, dist in node_bfs_cache['node_idxs_to_dist_dict'].items()
+            if dist <= distance
+        }
+        dist_to_node_idxs_dict = {
+            dist: node_idxs
+            for dist, node_idxs in node_bfs_cache['dist_to_node_idxs_dict'].items()
+            if dist <= distance
+        }
+    else:
+        node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=distance)
+        dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
 
     if use_edges_as_features:
         for target_node, dist in node_idxs_to_dist_dict.items():
             w = gaussian_weight(dist, sigma)
             path_nodes, path_edges = _shortest_path_edge_union(graph, node_idx, target_node)
-            for neighbor in graph.neighbors(target_node):
-                triplet_hash = graph.edges[target_node, neighbor].get('triplet_hash', None)
+            for neighbor in neighbors_by_node[target_node]:
+                triplet_hash = edge_triplet_hashes.get(_edge_key(target_node, neighbor))
                 if triplet_hash is not None:
                     raw_signature = hash_sequence([dist, triplet_hash])
                     distance_triplet_hash = hash_value(raw_signature, nbits=nbits)
@@ -236,7 +363,7 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
                             source_edge_ids=source_edge_ids,
                         )
 
-    for radius_i, code_i in enumerate(graph.nodes[node_idx]['rooted_graph_hash']):
+    for radius_i, code_i in enumerate(rooted_graph_hashes_by_node[node_idx]):
         for dist, node_idxs in sorted(dist_to_node_idxs_dict.items()):
             w = gaussian_weight(dist, sigma)
             for curr_node_idx in node_idxs:
@@ -245,14 +372,10 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
                 if connector > 0:
                     union_of_shortest_paths, union_path_edges = _shortest_path_edge_union(graph, node_idx, curr_node_idx)
                 for connect in range(connector + 1):
-                    for radius_j, code_j in enumerate(graph.nodes[curr_node_idx]['rooted_graph_hash']):
+                    for radius_j, code_j in enumerate(rooted_graph_hashes_by_node[curr_node_idx]):
                         source_node_ids = _node_ball(graph, node_idx, radius_i)
                         source_node_ids.update(_node_ball(graph, curr_node_idx, radius_j))
-                        source_edge_ids = set()
-                        for u in source_node_ids:
-                            for v in graph.neighbors(u):
-                                if v in source_node_ids:
-                                    source_edge_ids.add(_edge_key(u, v))
+                        source_edge_ids = _induced_edge_ids(source_node_ids, neighbors_by_node)
 
                         if connect == 0:
                             raw_signature = hash_sequence([code_i, dist, code_j])
@@ -287,43 +410,38 @@ def get_structural_node_vectors(original_graph, radius, distance, connector, nbi
     Uses an unweighted (faster) version if sigma is None, in which the weight is inlined as 1.0.
     If sigma is provided, the Gaussian weighted variant is used.
     """
-    graph = _prepare_structural_graph(original_graph, radius, connector, degree_threshold)
-    node_vectors = []
+    graph = _prepare_structural_graph(original_graph, radius, distance, connector, degree_threshold)
+    n_nodes = graph.number_of_nodes()
+    n_features = 2 ** nbits
+    rows = []
+    cols = []
+    data = []
     if sigma is None:
-        # Unweighted branch: use ListAccumulator and inline constant weight.
-        accumulator_class = ListAccumulator
-        convert_func = items_to_sparse_histogram
-        for node_idx in graph.nodes():
-            accumulator = accumulator_class()
+        for row_idx, node_idx in enumerate(graph.nodes()):
+            accumulator = ListAccumulator()
             _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator, use_edges_as_features)
-            node_vector = convert_func(accumulator.get(), nbits)
-            # Add special features (degree info)
-            node_vector[0, 0] = 1
-            node_vector[0, 1] = graph.degree[node_idx]
-            node_vector = node_vector.tocsr()
-            node_vectors.append(node_vector)
+            row_entries = Counter(accumulator.get())
+            row_entries[0] = 1
+            row_entries[1] = graph.degree[node_idx]
+            _append_sparse_row_entries(row_entries, row_idx, rows, cols, data)
     else:
-        # Weighted branch: use DictAccumulator.
-        accumulator_class = DictAccumulator
-        convert_func = weighted_sparse_histogram
-        for node_idx in graph.nodes():
-            accumulator = accumulator_class()
+        for row_idx, node_idx in enumerate(graph.nodes()):
+            accumulator = DictAccumulator()
             _process_node_features(node_idx, graph, distance, connector, nbits, sigma, accumulator, use_edges_as_features)
-            node_vector = convert_func(accumulator.get(), nbits)
-            # Add special features (degree info)
-            node_vector[0,0] = 1
-            node_vector[0,1] = graph.degree[node_idx]
-            node_vector = node_vector.tocsr()
-            node_vectors.append(node_vector)
-    
-    return sp.sparse.vstack(node_vectors)
+            row_entries = dict(accumulator.get())
+            row_entries[0] = 1.0
+            row_entries[1] = float(graph.degree[node_idx])
+            _append_sparse_row_entries(row_entries, row_idx, rows, cols, data)
+
+    dtype = float if sigma is not None else int
+    return csr_matrix((data, (rows, cols)), shape=(n_nodes, n_features), dtype=dtype)
 
 
 def get_feature_archive(original_graph, graph_index, radius, distance, connector, nbits, degree_threshold=None, sigma=None, use_edges_as_features=True):
     """
     Replays the structural hashing path and archives all occurrences per final hashed feature id.
     """
-    graph = _prepare_structural_graph(original_graph, radius, connector, degree_threshold)
+    graph = _prepare_structural_graph(original_graph, radius, distance, connector, degree_threshold)
     archive_collector = _FeatureArchiveCollector(original_graph, graph_index)
 
     for node_idx in graph.nodes():
