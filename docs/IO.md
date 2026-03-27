@@ -9,7 +9,7 @@ Both `NSPPK` and `NodeNSPPK` support the same interface:
 
 ```python
 load_from(uri, type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None, start_after_instance=0)
-stream_from(uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False, start_after_instance=0)
+stream_from(uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False, label_extractor=None, start_after_instance=0)
 ```
 
 Built-in `type` values:
@@ -18,7 +18,9 @@ Built-in `type` values:
 - `sdf`
 - `pyg_pt`
 
-`load_from(...)` does not require a fitted estimator. `stream_from(...)` does, because it batches graphs and applies `transform(...)` lazily.
+`load_from(...)` does not require a fitted estimator. `stream_from(...)` requires a fitted estimator only when the encoder has to learn attribute-dependent preprocessing such as embedding or clustering. For the default discrete-label setup, `fit(...)` is a no-op and streaming works immediately.
+
+When `label_extractor` is provided to `stream_from(...)`, each yielded item becomes `(X_batch, y_batch)` instead of `X_batch` alone.
 
 ## Selection Controls
 
@@ -78,6 +80,15 @@ for X_batch in nsppk.stream_from(
     verbose=True,
 ):
     print(X_batch.shape)
+
+# Stream supervised HIV batches directly.
+for X_batch, y_batch in nsppk.stream_from(
+    "https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/HIV.csv",
+    "smiles",
+    batch_size=256,
+    label_extractor=lambda graph: int(graph.graph["HIV_active"]),
+):
+    print(X_batch.shape, y_batch.shape)
 
 # Random Bernoulli subsample: keep each graph with probability 0.1.
 sampled_graphs = nsppk.load_from(

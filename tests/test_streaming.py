@@ -170,11 +170,22 @@ class StreamingIOTests(unittest.TestCase):
         self.assertEqual(batches[1].shape[0], 2)
         self.assertEqual(batches[2].shape[0], 1)
 
-    def test_stream_from_requires_fit(self):
-        vectorizer = nsppk.NSPPK(parallel=False, dense=False)
+    def test_stream_from_requires_fit_when_attribute_learning_is_enabled(self):
+        vectorizer = nsppk.NSPPK(
+            parallel=False,
+            dense=False,
+            node_attribute_key="feat",
+            attribute_dim=2,
+        )
+
+        def reader(_):
+            for value in [0.0, 1.0, 2.0]:
+                graph = nx.Graph()
+                graph.add_node(0, label="x", feat=np.array([value, value + 1.0, value + 2.0]))
+                yield graph
 
         with self.assertRaises(NotFittedError):
-            next(vectorizer.stream_from(self.smiles_path, "smiles", batch_size=2))
+            next(vectorizer.stream_from("ignored", "smiles", reader=reader, batch_size=2))
 
     def test_node_nsppk_has_same_loading_and_streaming_interface(self):
         vectorizer = nsppk.NodeNSPPK(parallel=False, dense=False, nbits=6)
@@ -199,6 +210,15 @@ class StreamingIOTests(unittest.TestCase):
         self.assertEqual(batches[0].shape[0], 2)
         self.assertEqual(batches[1].shape[0], 1)
 
+    def test_stream_from_does_not_require_explicit_fit_for_default_discrete_labels(self):
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False, nbits=6)
+
+        batches = list(vectorizer.stream_from(self.smiles_path, "smiles", batch_size=2, limit=3))
+
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(batches[0].shape[0], 2)
+        self.assertEqual(batches[1].shape[0], 1)
+
     def test_load_from_supports_url(self):
         vectorizer = nsppk.NSPPK(parallel=False, dense=False)
         with _HttpServer(self.data_dir) as server:
@@ -218,6 +238,69 @@ class StreamingIOTests(unittest.TestCase):
         self.assertEqual(len(batches), 2)
         self.assertEqual(batches[0].shape[0], 2)
         self.assertEqual(batches[1].shape[0], 2)
+
+    def test_stream_from_can_yield_targets(self):
+        csv_smiles_path = self.data_dir / "mols_targets.csv"
+        csv_smiles_path.write_text(
+            "\n".join(
+                [
+                    "smiles,activity,HIV_active",
+                    "CCO,CI,0",
+                    "CC,CA,1",
+                    "O,CI,0",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False, nbits=6)
+        batches = list(
+            vectorizer.stream_from(
+                csv_smiles_path,
+                "smiles",
+                batch_size=2,
+                limit=3,
+                label_extractor=lambda graph: int(graph.graph["HIV_active"]),
+            )
+        )
+
+        self.assertEqual(len(batches), 2)
+        X0, y0 = batches[0]
+        X1, y1 = batches[1]
+        self.assertEqual(X0.shape[0], 2)
+        self.assertEqual(X1.shape[0], 1)
+        np.testing.assert_array_equal(y0, np.array([0, 1]))
+        np.testing.assert_array_equal(y1, np.array([0]))
+
+    def test_stream_from_uses_default_name_as_target_when_label_extractor_omitted(self):
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False, nbits=6)
+        fit_graphs = vectorizer.load_from(self.smiles_path, "smiles", limit=2)
+        vectorizer.fit(fit_graphs)
+
+        def reader(_):
+            for label in ["a", "b", "c"]:
+                graph = nx.Graph()
+                graph.add_node(0, label=label)
+                graph.graph["name"] = label
+                yield graph
+
+        batches = list(
+            vectorizer.stream_from(
+                "ignored",
+                "smiles",
+                reader=reader,
+                batch_size=2,
+                limit=3,
+                label_extractor=lambda graph: graph.graph["name"],
+            )
+        )
+
+        self.assertEqual(len(batches), 2)
+        _, y0 = batches[0]
+        _, y1 = batches[1]
+        np.testing.assert_array_equal(y0, np.array(["a", "b"]))
+        np.testing.assert_array_equal(y1, np.array(["c"]))
 
     def test_verbose_load_from_emits_progress_logs(self):
         vectorizer = nsppk.NSPPK(parallel=False, dense=False)

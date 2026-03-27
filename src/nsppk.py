@@ -807,6 +807,7 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
         self.use_node_kernel = use_node_kernel
         self.sigma = sigma
         self.use_edges_as_features = use_edges_as_features
+        self.is_fitted_ = not self.requires_fit()
 
     def __repr__(self):
         """
@@ -817,6 +818,15 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
         """
         infos = ', '.join([f"{key}={value}" for key, value in self.__dict__.items()])
         return f"{self.__class__.__name__}({infos})"
+
+    def requires_fit(self):
+        """
+        Return whether this encoder needs data-dependent fitting before ``transform``.
+
+        Returns:
+            bool: ``True`` when attribute embedding or attribute-label discretization must be learned.
+        """
+        return bool(self.node_attribute_key and (self.attribute_dim or self.attribute_alphabet_size))
 
     def fit(self, graphs, targets=None):
         """
@@ -1112,7 +1122,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
             start_after_instance=start_after_instance,
         )
 
-    def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False, start_after_instance=0):
+    def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False, label_extractor=None, start_after_instance=0):
         """
         Stream transformed graph batches from a local path or URL.
 
@@ -1128,12 +1138,18 @@ class NSPPK(BaseEstimator, TransformerMixin):
             random_state (int or numpy.random.Generator, optional): Sampling seed used only for fractional ``limit``.
             batch_size (int, default=128): Number of graphs per transformed batch.
             verbose (bool, default=False): Whether to print cumulative loading statistics while streaming.
+            label_extractor (callable, optional): Callable extracting a target from each graph. When provided,
+                the stream yields ``(X_batch, y_batch)`` pairs instead of feature batches alone. Defaults to
+                ``lambda graph: graph.graph['name']``.
 
         Yields:
-            numpy.ndarray or scipy.sparse.csr_matrix: Transformed batches produced by ``self.transform``.
+            numpy.ndarray or scipy.sparse.csr_matrix: Transformed batches produced by ``self.transform`` when
+                ``label_extractor`` is omitted.
+            tuple: ``(X_batch, y_batch)`` when ``label_extractor`` is provided.
         """
         check_is_fitted(self.base_nsppk, 'is_fitted_')
         _sync_graph_io_hooks()
+        extractor = _graph_io._normalize_label_extractor(label_extractor) if label_extractor is not None else None
         graph_iterable = _graph_io._iter_loaded_graphs(
             uri,
             type,
@@ -1145,7 +1161,12 @@ class NSPPK(BaseEstimator, TransformerMixin):
             start_after_instance=start_after_instance,
         )
         for graph_batch in _graph_io._batched_graphs(graph_iterable, batch_size):
-            yield self.transform(graph_batch)
+            X_batch = self.transform(graph_batch)
+            if extractor is None:
+                yield X_batch
+                continue
+            y_batch = np.asarray([extractor(graph) for graph in graph_batch])
+            yield X_batch, y_batch
 
     def transform(self, graphs):
         """
@@ -1395,7 +1416,7 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             start_after_instance=start_after_instance,
         )
 
-    def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False, start_after_instance=0):
+    def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False, label_extractor=None, start_after_instance=0):
         """
         Stream transformed node-feature batches from a local path or URL.
 
@@ -1411,12 +1432,18 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             random_state (int or numpy.random.Generator, optional): Sampling seed used only for fractional ``limit``.
             batch_size (int, default=128): Number of graphs per transformed batch.
             verbose (bool, default=False): Whether to print cumulative loading statistics while streaming.
+            label_extractor (callable, optional): Callable extracting a target from each graph. When provided,
+                the stream yields ``(X_batch, y_batch)`` pairs instead of feature batches alone. Defaults to
+                ``lambda graph: graph.graph['name']``.
 
         Yields:
-            list of numpy.ndarray or list of scipy.sparse.csr_matrix: Transformed batches produced by ``self.transform``.
+            list of numpy.ndarray or list of scipy.sparse.csr_matrix: Transformed batches produced by
+                ``self.transform`` when ``label_extractor`` is omitted.
+            tuple: ``(X_batch, y_batch)`` when ``label_extractor`` is provided.
         """
         check_is_fitted(self.nsppk.base_nsppk, 'is_fitted_')
         _sync_graph_io_hooks()
+        extractor = _graph_io._normalize_label_extractor(label_extractor) if label_extractor is not None else None
         graph_iterable = _graph_io._iter_loaded_graphs(
             uri,
             type,
@@ -1428,7 +1455,12 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             start_after_instance=start_after_instance,
         )
         for graph_batch in _graph_io._batched_graphs(graph_iterable, batch_size):
-            yield self.transform(graph_batch)
+            X_batch = self.transform(graph_batch)
+            if extractor is None:
+                yield X_batch
+                continue
+            y_batch = np.asarray([extractor(graph) for graph in graph_batch])
+            yield X_batch, y_batch
 
     def transform(self, graphs):
         """
