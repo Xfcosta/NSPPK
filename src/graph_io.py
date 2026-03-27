@@ -295,10 +295,29 @@ def _validate_limit(limit):
     raise ValueError("limit must be None, a non-negative integer, or a float strictly between 0 and 1.")
 
 
+def _validate_start_after_instance(start_after_instance):
+    if isinstance(start_after_instance, bool):
+        raise ValueError("start_after_instance must be a non-negative integer.")
+    if not isinstance(start_after_instance, Integral):
+        raise ValueError("start_after_instance must be a non-negative integer.")
+    if start_after_instance < 0:
+        raise ValueError("start_after_instance must be a non-negative integer.")
+
+
 def _make_rng(random_state):
     if isinstance(random_state, np.random.Generator):
         return random_state
     return np.random.default_rng(random_state)
+
+
+def _apply_start_offset(graph_iterable, start_after_instance=0):
+    _validate_start_after_instance(start_after_instance)
+    remaining = int(start_after_instance)
+    for graph in graph_iterable:
+        if remaining > 0:
+            remaining -= 1
+            continue
+        yield graph
 
 
 def _apply_limit(graph_iterable, limit=None, random_state=None):
@@ -375,18 +394,20 @@ def _select_balanced_indices(labels, target_size, rng):
     return np.sort(selected_idx)
 
 
-def _materialize_loaded_graphs(uri, source_type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None):
-    if balance and isinstance(limit, Real) and not isinstance(limit, Integral):
-        raise ValueError("balance=True requires limit to be None or a non-negative integer.")
+def _materialize_loaded_graphs(uri, source_type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None, start_after_instance=0):
+    fractional_limit = isinstance(limit, Real) and not isinstance(limit, Integral)
+    load_limit = limit if fractional_limit else (None if balance else limit)
+    target_size = None if fractional_limit else limit
 
     graph_iterable = _iter_loaded_graphs(
         uri,
         source_type,
         reader=reader,
-        limit=None if balance else limit,
+        limit=load_limit,
         random_state=random_state,
         verbose=verbose,
         mode="load",
+        start_after_instance=start_after_instance,
     )
     graphs = list(graph_iterable)
 
@@ -396,11 +417,11 @@ def _materialize_loaded_graphs(uri, source_type, reader=None, limit=None, random
     rng = _make_rng(random_state)
     extractor = _normalize_label_extractor(label_extractor)
     labels = np.asarray([extractor(graph) for graph in graphs])
-    selected_idx = _select_balanced_indices(labels, target_size=limit, rng=rng)
+    selected_idx = _select_balanced_indices(labels, target_size=target_size, rng=rng)
     return [graphs[idx] for idx in selected_idx]
 
 
-def _iter_loaded_graphs(uri, source_type, reader=None, limit=None, random_state=None, verbose=False, mode="load", log_every=100, log_stream=None):
+def _iter_loaded_graphs(uri, source_type, reader=None, limit=None, random_state=None, verbose=False, mode="load", log_every=100, log_stream=None, start_after_instance=0):
     stats = {
         "seen": 0,
         "loaded": 0,
@@ -422,7 +443,8 @@ def _iter_loaded_graphs(uri, source_type, reader=None, limit=None, random_state=
         graph_iterable = reader(uri)
 
     validated_graphs = (_validate_graph(graph) for graph in graph_iterable)
-    limited_graphs = _apply_limit(validated_graphs, limit=limit, random_state=random_state)
+    offset_graphs = _apply_start_offset(validated_graphs, start_after_instance=start_after_instance)
+    limited_graphs = _apply_limit(offset_graphs, limit=limit, random_state=random_state)
 
     try:
         for graph in limited_graphs:

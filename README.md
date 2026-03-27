@@ -40,8 +40,8 @@ NSPPK now exposes two source-ingestion helpers:
 Both `NSPPK` and `NodeNSPPK` support the same interface:
 
 ```python
-load_from(uri, type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None)
-stream_from(uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False)
+load_from(uri, type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None, start_after_instance=0)
+stream_from(uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False, start_after_instance=0)
 ```
 
 Built-in `type` values:
@@ -58,12 +58,17 @@ Built-in `type` values:
 - integer `n >= 0`: take the first `n` graphs
 - float `0 < p < 1`: sample each graph independently with probability `p`
 
-`balance=True` only applies to `load_from(...)`. It materializes all graphs first, then rebalances classes using `label_extractor(graph)`. When balancing is enabled, `limit` must be `None` or an integer.
+`start_after_instance` controls where loading starts:
+
+- integer `k >= 0`: skip the first `k` materialized graphs before applying `limit`
+
+`balance=True` only applies to `load_from(...)`. It materializes the selected graphs first, then rebalances classes using `label_extractor(graph)`.
 
 Balancing details:
 
 - `limit=None`: return the largest class-balanced subset available
 - `limit=<integer>`: return a balanced subset capped at that size
+- `limit=<float>`: first apply Bernoulli sampling with probability `limit`, then rebalance the sampled subset
 - if the requested size is not divisible by the number of classes, the remainder is filled from the leftover pool after equal per-class sampling
 - if `label_extractor` is omitted, `load_from(...)` uses `graph.graph["name"]`
 
@@ -114,6 +119,30 @@ molecular_graphs = nsppk.load_from(
     balance=True,
     label_extractor=lambda graph: int(graph.graph["HIV_active"]),
 )
+
+# Sample first, then rebalance the sampled subset.
+sampled_balanced_graphs = nsppk.load_from(
+    "https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/HIV.csv",
+    "smiles",
+    limit=0.25,
+    random_state=42,
+    balance=True,
+    label_extractor=lambda graph: int(graph.graph["HIV_active"]),
+)
+
+# Reserve the first N graphs for one split and stream everything after that.
+test_graphs = nsppk.load_from(
+    "https://cache.docking.org/2D/AA/AAAA.smi",
+    "smiles",
+    limit=1000,
+)
+for X_batch in nsppk.stream_from(
+    "https://cache.docking.org/2D/AA/AAAA.smi",
+    "smiles",
+    start_after_instance=1000,
+    batch_size=256,
+):
+    print(X_batch.shape)
 
 # Show cumulative progress logs while loading or streaming.
 train_graphs = nsppk.load_from(

@@ -1077,7 +1077,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
         self.base_nsppk.fit(graphs, targets)
         return self
 
-    def load_from(self, uri, type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None):
+    def load_from(self, uri, type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None, start_after_instance=0):
         """
         Load graphs from a local path or URL and materialize them as a list.
 
@@ -1088,6 +1088,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
                 ``networkx.Graph`` objects.
             limit (int or float, optional): Selection control. ``None`` loads all graphs, a non-negative
                 integer loads the first ``limit`` graphs, and a float in ``(0, 1)`` applies Bernoulli sampling.
+            start_after_instance (int, default=0): Skip the first ``start_after_instance`` materialized graphs
+                before applying ``limit`` and optional balancing.
             random_state (int or numpy.random.Generator, optional): Sampling seed used only for fractional ``limit``.
             verbose (bool, default=False): Whether to print cumulative loading statistics while streaming.
             balance (bool, default=False): Whether to rebalance the loaded graphs across class labels before returning them.
@@ -1107,9 +1109,10 @@ class NSPPK(BaseEstimator, TransformerMixin):
             verbose=verbose,
             balance=balance,
             label_extractor=label_extractor,
+            start_after_instance=start_after_instance,
         )
 
-    def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False):
+    def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False, start_after_instance=0):
         """
         Stream transformed graph batches from a local path or URL.
 
@@ -1120,6 +1123,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
                 ``networkx.Graph`` objects.
             limit (int or float, optional): Selection control. ``None`` loads all graphs, a non-negative
                 integer loads the first ``limit`` graphs, and a float in ``(0, 1)`` applies Bernoulli sampling.
+            start_after_instance (int, default=0): Skip the first ``start_after_instance`` materialized graphs
+                before applying ``limit``.
             random_state (int or numpy.random.Generator, optional): Sampling seed used only for fractional ``limit``.
             batch_size (int, default=128): Number of graphs per transformed batch.
             verbose (bool, default=False): Whether to print cumulative loading statistics while streaming.
@@ -1137,6 +1142,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
             random_state=random_state,
             verbose=verbose,
             mode='stream',
+            start_after_instance=start_after_instance,
         )
         for graph_batch in _graph_io._batched_graphs(graph_iterable, batch_size):
             yield self.transform(graph_batch)
@@ -1355,7 +1361,7 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
         self.nsppk.fit(graphs, targets)
         return self
 
-    def load_from(self, uri, type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None):
+    def load_from(self, uri, type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None, start_after_instance=0):
         """
         Load graphs from a local path or URL and materialize them as a list.
 
@@ -1366,6 +1372,8 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
                 ``networkx.Graph`` objects.
             limit (int or float, optional): Selection control. ``None`` loads all graphs, a non-negative
                 integer loads the first ``limit`` graphs, and a float in ``(0, 1)`` applies Bernoulli sampling.
+            start_after_instance (int, default=0): Skip the first ``start_after_instance`` materialized graphs
+                before applying ``limit`` and optional balancing.
             random_state (int or numpy.random.Generator, optional): Sampling seed used only for fractional ``limit``.
             verbose (bool, default=False): Whether to print cumulative loading statistics while streaming.
             balance (bool, default=False): Whether to rebalance the loaded graphs across class labels before returning them.
@@ -1384,9 +1392,10 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             verbose=verbose,
             balance=balance,
             label_extractor=label_extractor,
+            start_after_instance=start_after_instance,
         )
 
-    def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False):
+    def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False, start_after_instance=0):
         """
         Stream transformed node-feature batches from a local path or URL.
 
@@ -1397,6 +1406,8 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
                 ``networkx.Graph`` objects.
             limit (int or float, optional): Selection control. ``None`` loads all graphs, a non-negative
                 integer loads the first ``limit`` graphs, and a float in ``(0, 1)`` applies Bernoulli sampling.
+            start_after_instance (int, default=0): Skip the first ``start_after_instance`` materialized graphs
+                before applying ``limit``.
             random_state (int or numpy.random.Generator, optional): Sampling seed used only for fractional ``limit``.
             batch_size (int, default=128): Number of graphs per transformed batch.
             verbose (bool, default=False): Whether to print cumulative loading statistics while streaming.
@@ -1414,6 +1425,7 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             random_state=random_state,
             verbose=verbose,
             mode='stream',
+            start_after_instance=start_after_instance,
         )
         for graph_batch in _graph_io._batched_graphs(graph_iterable, batch_size):
             yield self.transform(graph_batch)

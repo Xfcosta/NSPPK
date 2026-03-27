@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import networkx as nx
+import numpy as np
 from sklearn.exceptions import NotFittedError
 
 import nsppk
@@ -150,6 +151,13 @@ class StreamingIOTests(unittest.TestCase):
             [graph.graph["smiles"] for graph in graphs_b],
         )
 
+    def test_load_from_can_skip_initial_instances(self):
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False)
+        graphs = vectorizer.load_from(self.smiles_path, "smiles", start_after_instance=2, limit=2)
+
+        self.assertEqual(len(graphs), 2)
+        self.assertEqual([graph.graph["smiles"] for graph in graphs], ["O", "N"])
+
     def test_stream_from_batches_transformed_output(self):
         vectorizer = nsppk.NSPPK(parallel=False, dense=False, nbits=6)
         fit_graphs = vectorizer.load_from(self.smiles_path, "smiles", limit=2)
@@ -179,6 +187,17 @@ class StreamingIOTests(unittest.TestCase):
         self.assertEqual(len(batches), 2)
         self.assertEqual(len(batches[0]), 2)
         self.assertEqual(len(batches[1]), 1)
+
+    def test_stream_from_can_skip_initial_instances(self):
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False, nbits=6)
+        fit_graphs = vectorizer.load_from(self.smiles_path, "smiles", limit=2)
+        vectorizer.fit(fit_graphs)
+
+        batches = list(vectorizer.stream_from(self.smiles_path, "smiles", batch_size=2, start_after_instance=2))
+
+        self.assertEqual(len(batches), 2)
+        self.assertEqual(batches[0].shape[0], 2)
+        self.assertEqual(batches[1].shape[0], 1)
 
     def test_load_from_supports_url(self):
         vectorizer = nsppk.NSPPK(parallel=False, dense=False)
@@ -220,6 +239,15 @@ class StreamingIOTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             vectorizer.load_from(self.smiles_path, "smiles", limit=1.5)
+
+    def test_invalid_start_after_instance_raises_value_error(self):
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False)
+
+        with self.assertRaises(ValueError):
+            vectorizer.load_from(self.smiles_path, "smiles", start_after_instance=-1)
+
+        with self.assertRaises(ValueError):
+            vectorizer.load_from(self.smiles_path, "smiles", start_after_instance=1.5)
 
     def test_missing_rdkit_raises_targeted_import_error(self):
         vectorizer = nsppk.NSPPK(parallel=False, dense=False)
@@ -276,17 +304,45 @@ class BalancedLoadTests(unittest.TestCase):
         self.assertEqual(labels.count(0), 2)
         self.assertEqual(labels.count(1), 1)
 
-    def test_load_from_balance_rejects_fractional_limit(self):
+    def test_load_from_balance_applies_after_start_offset(self):
         vectorizer = nsppk.NSPPK(parallel=False, dense=False)
+        graphs = vectorizer.load_from(
+            "ignored",
+            "smiles",
+            reader=self._reader,
+            balance=True,
+            start_after_instance=1,
+            random_state=7,
+        )
 
-        with self.assertRaises(ValueError):
-            vectorizer.load_from(
+        labels = [graph.graph["name"] for graph in graphs]
+        idxs = [graph.graph["idx"] for graph in graphs]
+        self.assertEqual(len(graphs), 4)
+        self.assertEqual(labels.count(0), 2)
+        self.assertEqual(labels.count(1), 2)
+        self.assertNotIn(0, idxs)
+
+    def test_load_from_balance_applies_fractional_limit_before_rebalancing(self):
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False)
+        with mock.patch(
+            "nsppk._make_rng",
+            side_effect=[
+                _SequenceRng([0.1, 0.9, 0.1, 0.9, 0.1, 0.9]),
+                np.random.default_rng(7),
+            ],
+        ):
+            graphs = vectorizer.load_from(
                 "ignored",
                 "smiles",
                 reader=self._reader,
                 balance=True,
                 limit=0.5,
             )
+
+        labels = [graph.graph["name"] for graph in graphs]
+        self.assertEqual(len(graphs), 2)
+        self.assertEqual(labels.count(0), 1)
+        self.assertEqual(labels.count(1), 1)
 
 
 class ConstructorAliasTests(unittest.TestCase):
