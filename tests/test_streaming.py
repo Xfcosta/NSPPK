@@ -370,6 +370,9 @@ class BalancedLoadTests(unittest.TestCase):
         self.assertEqual(len(graphs), 4)
         self.assertEqual(labels.count(0), 2)
         self.assertEqual(labels.count(1), 2)
+        self.assertEqual(vectorizer.loaded_balance_candidate_size_, 6)
+        self.assertEqual(vectorizer.loaded_label_counts_, {0: 4, 1: 2})
+        self.assertEqual(vectorizer.loaded_class_weight_, {0: 0.75, 1: 1.5})
 
     def test_load_from_balance_respects_integer_limit(self):
         vectorizer = nsppk.NSPPK(parallel=False, dense=False)
@@ -426,6 +429,44 @@ class BalancedLoadTests(unittest.TestCase):
         self.assertEqual(len(graphs), 2)
         self.assertEqual(labels.count(0), 1)
         self.assertEqual(labels.count(1), 1)
+        self.assertEqual(vectorizer.loaded_balance_candidate_size_, 3)
+        self.assertEqual(vectorizer.loaded_label_counts_, {0: 2, 1: 1})
+        self.assertEqual(vectorizer.loaded_class_weight_, {0: 0.75, 1: 1.5})
+
+    def test_load_from_without_balance_clears_loaded_label_metadata(self):
+        vectorizer = nsppk.NSPPK(parallel=False, dense=False)
+        vectorizer.load_from(
+            "ignored",
+            "smiles",
+            reader=self._reader,
+            balance=True,
+            random_state=7,
+        )
+
+        vectorizer.load_from(
+            "ignored",
+            "smiles",
+            reader=self._reader,
+            balance=False,
+        )
+
+        self.assertIsNone(vectorizer.loaded_balance_candidate_size_)
+        self.assertIsNone(vectorizer.loaded_label_counts_)
+        self.assertIsNone(vectorizer.loaded_class_weight_)
+
+    def test_node_nsppk_exposes_loaded_label_metadata(self):
+        vectorizer = nsppk.NodeNSPPK(parallel=False, dense=False)
+        vectorizer.load_from(
+            "ignored",
+            "smiles",
+            reader=self._reader,
+            balance=True,
+            random_state=7,
+        )
+
+        self.assertEqual(vectorizer.loaded_balance_candidate_size_, 6)
+        self.assertEqual(vectorizer.loaded_label_counts_, {0: 4, 1: 2})
+        self.assertEqual(vectorizer.loaded_class_weight_, {0: 0.75, 1: 1.5})
 
 
 class ConstructorAliasTests(unittest.TestCase):

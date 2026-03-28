@@ -53,6 +53,17 @@ def _resolve_alias(primary_name, primary_value, alias_name, alias_value, default
         )
     return alias_value
 
+
+def _set_loaded_label_metadata(estimator, metadata):
+    estimator.loaded_balance_candidate_size_ = None
+    estimator.loaded_label_counts_ = None
+    estimator.loaded_class_weight_ = None
+    if metadata is None:
+        return
+    estimator.loaded_balance_candidate_size_ = metadata["candidate_size"]
+    estimator.loaded_label_counts_ = dict(metadata["label_counts"])
+    estimator.loaded_class_weight_ = dict(metadata["class_weight"])
+
 def items_to_sparse_histogram(items, nbits):
     histogram_dict = Counter(items)
     # Create a LIL matrix first
@@ -1016,6 +1027,9 @@ class NSPPK(BaseEstimator, TransformerMixin):
         self.r = radius
         self.d = distance
         self.c = connector
+        self.loaded_balance_candidate_size_ = None
+        self.loaded_label_counts_ = None
+        self.loaded_class_weight_ = None
 
         self._initialize_components()
 
@@ -1107,10 +1121,12 @@ class NSPPK(BaseEstimator, TransformerMixin):
                 Defaults to ``lambda graph: graph.graph['name']``.
 
         Returns:
-            list of networkx.Graph: Materialized graphs.
+            list of networkx.Graph: Materialized graphs. After the call, `loaded_balance_candidate_size_`,
+            `loaded_label_counts_`, and `loaded_class_weight_` are populated when `balance=True` using the
+            pre-balanced candidate pool and cleared otherwise.
         """
         _sync_graph_io_hooks()
-        return _graph_io._materialize_loaded_graphs(
+        graphs, metadata = _graph_io._materialize_loaded_graphs(
             uri,
             type,
             reader=reader,
@@ -1120,7 +1136,10 @@ class NSPPK(BaseEstimator, TransformerMixin):
             balance=balance,
             label_extractor=label_extractor,
             start_after_instance=start_after_instance,
+            return_metadata=True,
         )
+        _set_loaded_label_metadata(self, metadata)
+        return graphs
 
     def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False, label_extractor=None, start_after_instance=0):
         """
@@ -1402,9 +1421,11 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
                 Defaults to ``lambda graph: graph.graph['name']``.
 
         Returns:
-            list of networkx.Graph: Materialized graphs.
+            list of networkx.Graph: Materialized graphs. After the call, `loaded_balance_candidate_size_`,
+            `loaded_label_counts_`, and `loaded_class_weight_` mirror the underlying `NSPPK` loader metadata
+            when `balance=True` and are cleared otherwise.
         """
-        return self.nsppk.load_from(
+        graphs = self.nsppk.load_from(
             uri,
             type,
             reader=reader,
@@ -1415,6 +1436,10 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             label_extractor=label_extractor,
             start_after_instance=start_after_instance,
         )
+        self.loaded_balance_candidate_size_ = self.nsppk.loaded_balance_candidate_size_
+        self.loaded_label_counts_ = self.nsppk.loaded_label_counts_
+        self.loaded_class_weight_ = self.nsppk.loaded_class_weight_
+        return graphs
 
     def stream_from(self, uri, type, reader=None, limit=None, random_state=None, batch_size=128, verbose=False, label_extractor=None, start_after_instance=0):
         """

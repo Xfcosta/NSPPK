@@ -38,6 +38,12 @@ When `label_extractor` is provided to `stream_from(...)`, each yielded item beco
 
 `balance=True` only applies to `load_from(...)`. It materializes the selected graphs first, then rebalances classes using `label_extractor(graph)`.
 
+After a balanced `load_from(...)`, the estimator exposes metadata derived from the pre-balanced candidate pool:
+
+- `loaded_balance_candidate_size_`: number of candidate graphs considered before rebalancing
+- `loaded_label_counts_`: class counts in that candidate pool
+- `loaded_class_weight_`: balanced class weights computed from that candidate pool
+
 Balancing details:
 
 - `limit=None`: return the largest class-balanced subset available

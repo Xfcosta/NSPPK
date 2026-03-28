@@ -394,7 +394,34 @@ def _select_balanced_indices(labels, target_size, rng):
     return np.sort(selected_idx)
 
 
-def _materialize_loaded_graphs(uri, source_type, reader=None, limit=None, random_state=None, verbose=False, balance=False, label_extractor=None, start_after_instance=0):
+def _compute_balanced_class_weight(labels):
+    labels = np.asarray(labels)
+    unique_labels, counts = np.unique(labels, return_counts=True)
+    if unique_labels.size == 0:
+        return {}, {}
+    n_samples = labels.shape[0]
+    n_classes = unique_labels.size
+    label_counts = {}
+    class_weight = {}
+    for label, count in zip(unique_labels.tolist(), counts.tolist()):
+        key = _hashable_value(label)
+        label_counts[key] = int(count)
+        class_weight[key] = n_samples / (n_classes * count)
+    return label_counts, class_weight
+
+
+def _materialize_loaded_graphs(
+    uri,
+    source_type,
+    reader=None,
+    limit=None,
+    random_state=None,
+    verbose=False,
+    balance=False,
+    label_extractor=None,
+    start_after_instance=0,
+    return_metadata=False,
+):
     fractional_limit = isinstance(limit, Real) and not isinstance(limit, Integral)
     load_limit = limit if fractional_limit else (None if balance else limit)
     target_size = None if fractional_limit else limit
@@ -412,13 +439,24 @@ def _materialize_loaded_graphs(uri, source_type, reader=None, limit=None, random
     graphs = list(graph_iterable)
 
     if not balance:
+        if return_metadata:
+            return graphs, None
         return graphs
 
     rng = _make_rng(random_state)
     extractor = _normalize_label_extractor(label_extractor)
     labels = np.asarray([extractor(graph) for graph in graphs])
     selected_idx = _select_balanced_indices(labels, target_size=target_size, rng=rng)
-    return [graphs[idx] for idx in selected_idx]
+    balanced_graphs = [graphs[idx] for idx in selected_idx]
+    label_counts, class_weight = _compute_balanced_class_weight(labels)
+    metadata = {
+        "candidate_size": len(graphs),
+        "label_counts": label_counts,
+        "class_weight": class_weight,
+    }
+    if return_metadata:
+        return balanced_graphs, metadata
+    return balanced_graphs
 
 
 def _iter_loaded_graphs(uri, source_type, reader=None, limit=None, random_state=None, verbose=False, mode="load", log_every=100, log_stream=None, start_after_instance=0):
