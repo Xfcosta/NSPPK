@@ -62,6 +62,23 @@ print(node_features[0].shape)  # (number of nodes in graphs[0], 256)
 
 Rows follow each graph’s `graph.nodes()` iteration order. See the [API reference](docs/API.md) for graph requirements, parameter meanings, and output shapes.
 
+For supervised learning directly from graph lists, use `NSPPKClassifier` or `NSPPKRegressor`. Both accept any compatible scikit-learn estimator, with `"linear"` and `"rf"` shortcuts:
+
+```python
+from nsppk import NSPPKClassifier
+
+classifier = NSPPKClassifier(
+    estimator="linear",
+    estimator_params={"C": 0.5},
+    nbits=14,
+    parallel=False,
+)
+classifier.fit(train_graphs, y_train)
+predictions = classifier.predict(test_graphs)
+```
+
+The `"linear"` shortcut uses logistic regression for classification and Ridge regression for regression. The `"rf"` shortcut uses the corresponding random forest. See the [API reference](docs/API.md) for custom estimators and parameter options.
+
 ## Documentation
 
 - [API and output reference](docs/API.md)

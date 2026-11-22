@@ -36,6 +36,59 @@ For continuous node features, set `node_attribute_key` to the attribute name. Ev
 
 The constructor also accepts the aliases `r`, `d`, and `c` for `radius`, `distance`, and `connector`. Prefer the long names.
 
+### `NSPPKClassifier` and `NSPPKRegressor`
+
+These supervised estimators accept graph lists directly and combine NSPPK vectorization with a scikit-learn predictor. They expose the same structural and node-attribute settings as `NSPPK`, with `dense=False` by default so estimators receive sparse features.
+
+```python
+from nsppk import NSPPKClassifier, NSPPKRegressor
+
+classifier = NSPPKClassifier(
+    estimator="linear",
+    estimator_params={"C": 0.5},
+    nbits=14,
+)
+classifier.fit(train_graphs, y_train)
+predictions = classifier.predict(test_graphs)
+
+regressor = NSPPKRegressor(
+    estimator="rf",
+    estimator_params={"n_estimators": 250, "max_depth": 16},
+    nbits=14,
+)
+regressor.fit(train_graphs, y_train)
+predictions = regressor.predict(test_graphs)
+```
+
+The `"linear"` shortcut selects `LogisticRegression` for classification and `Ridge` for regression. The `"rf"` shortcut selects `RandomForestClassifier` or `RandomForestRegressor`; both forest shortcuts set `random_state=0` by default. Use `estimator_params` to override shortcut parameters, or pass a scikit-learn estimator instance directly:
+
+```python
+from sklearn.linear_model import LogisticRegression
+
+classifier = NSPPKClassifier(
+    estimator=LogisticRegression(C=0.5, max_iter=2000),
+    nbits=14,
+)
+```
+
+Custom estimators must match the wrapper task and implement scikit-learn's `fit` and `predict` methods. `estimator_params` can also override parameters on a supplied estimator instance. `predict_proba` and `decision_function` are exposed when the wrapped classifier supports them. The classifier's `score` uses accuracy; the regressor's `score` uses R-squared.
+
+SVD is a feature-reduction step, not a predictor shortcut. To reduce the hashed graph vectors before a linear predictor, pass a scikit-learn pipeline as the estimator:
+
+```python
+from sklearn.decomposition import TruncatedSVD
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+
+classifier = NSPPKClassifier(
+    estimator=make_pipeline(
+        TruncatedSVD(n_components=512, random_state=0),
+        LogisticRegression(max_iter=1000),
+    ),
+    nbits=14,
+)
+```
+
 ### `NodeNSPPK`
 
 `NodeNSPPK` uses the same structural parameters as `NSPPK` except `edge_attribute_key` and `use_node_kernel`. It returns a list of per-graph matrices. Matrix row `i` corresponds to the `i`th node in that graph’s iteration order.

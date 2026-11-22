@@ -6,11 +6,21 @@ import networkx as nx
 import numpy as np
 import scipy as sp
 from scipy.sparse import csr_matrix
-from sklearn.utils.validation import check_is_fitted
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.utils.validation import check_is_fitted, check_consistent_length
+from sklearn.utils.metaestimators import available_if
+from sklearn.base import (
+    BaseEstimator,
+    ClassifierMixin,
+    RegressorMixin,
+    TransformerMixin,
+    clone,
+    is_classifier,
+    is_regressor,
+)
 from sklearn.cluster import KMeans
-from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier, RandomForestRegressor
 from sklearn.decomposition import TruncatedSVD
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.model_selection import train_test_split
 import multiprocessing_on_dill as mp
 
@@ -1442,6 +1452,180 @@ class NSPPK(BaseEstimator, TransformerMixin):
             )
 
         return self
+
+
+class _NSPPKPredictor(BaseEstimator):
+    """Shared graph-vectorization and prediction implementation."""
+
+    _task = None
+
+    def __init__(
+        self,
+        estimator="linear",
+        estimator_params=None,
+        radius=1,
+        distance=3,
+        connector=0,
+        nbits=10,
+        degree_threshold=None,
+        dense=False,
+        parallel=True,
+        weight_key=None,
+        node_attribute_key=None,
+        edge_attribute_key=None,
+        attribute_dim=None,
+        attribute_alphabet_size=None,
+        use_node_kernel=False,
+        sigma=None,
+        use_edges_as_features=True,
+    ):
+        self.estimator = estimator
+        self.estimator_params = estimator_params
+        self.radius = radius
+        self.distance = distance
+        self.connector = connector
+        self.nbits = nbits
+        self.degree_threshold = degree_threshold
+        self.dense = dense
+        self.parallel = parallel
+        self.weight_key = weight_key
+        self.node_attribute_key = node_attribute_key
+        self.edge_attribute_key = edge_attribute_key
+        self.attribute_dim = attribute_dim
+        self.attribute_alphabet_size = attribute_alphabet_size
+        self.use_node_kernel = use_node_kernel
+        self.sigma = sigma
+        self.use_edges_as_features = use_edges_as_features
+
+    def _make_estimator(self):
+        estimator = self.estimator
+        if isinstance(estimator, str):
+            shortcut = estimator.strip().lower()
+            if shortcut == "linear":
+                model = (
+                    LogisticRegression(max_iter=1000)
+                    if self._task == "classifier"
+                    else Ridge()
+                )
+            elif shortcut == "rf":
+                model = (
+                    RandomForestClassifier(random_state=0)
+                    if self._task == "classifier"
+                    else RandomForestRegressor(random_state=0)
+                )
+            else:
+                raise ValueError(
+                    "estimator must be 'linear', 'rf', or a scikit-learn estimator; "
+                    f"got {estimator!r}."
+                )
+        elif isinstance(estimator, type):
+            try:
+                model = estimator()
+            except TypeError as exc:
+                raise TypeError(
+                    "Pass an estimator instance, or an estimator class that can be "
+                    "constructed without arguments."
+                ) from exc
+        else:
+            model = clone(estimator)
+
+        if self.estimator_params is not None:
+            if not isinstance(self.estimator_params, dict):
+                raise TypeError("estimator_params must be a dictionary or None.")
+            if not hasattr(model, "set_params"):
+                raise TypeError("estimator must support scikit-learn set_params().")
+            model.set_params(**self.estimator_params)
+
+        if not callable(getattr(model, "fit", None)) or not callable(
+            getattr(model, "predict", None)
+        ):
+            raise TypeError("estimator must implement scikit-learn fit() and predict().")
+
+        correct_type = (
+            is_classifier(model)
+            if self._task == "classifier"
+            else is_regressor(model)
+        )
+        if not correct_type:
+            expected = "classifier" if self._task == "classifier" else "regressor"
+            raise TypeError(f"estimator must be a scikit-learn {expected}.")
+        return model
+
+    def fit(self, X, y, **fit_params):
+        """Fit the NSPPK encoder and the selected predictor on graph inputs."""
+        graphs = list(X)
+        if not graphs:
+            raise ValueError("X must contain at least one graph.")
+        if y is None:
+            raise ValueError("y is required.")
+        check_consistent_length(graphs, y)
+
+        encoder = NSPPK(
+            radius=self.radius,
+            distance=self.distance,
+            connector=self.connector,
+            nbits=self.nbits,
+            degree_threshold=self.degree_threshold,
+            dense=self.dense,
+            parallel=self.parallel,
+            weight_key=self.weight_key,
+            node_attribute_key=self.node_attribute_key,
+            edge_attribute_key=self.edge_attribute_key,
+            attribute_dim=self.attribute_dim,
+            attribute_alphabet_size=self.attribute_alphabet_size,
+            use_node_kernel=self.use_node_kernel,
+            sigma=self.sigma,
+            use_edges_as_features=self.use_edges_as_features,
+        )
+        encoder.fit(graphs, y)
+        features = encoder.transform(graphs)
+        model = self._make_estimator()
+        model.fit(features, y, **fit_params)
+
+        self.encoder_ = encoder
+        self.estimator_ = model
+        if self._task == "classifier" and hasattr(model, "classes_"):
+            self.classes_ = model.classes_
+        return self
+
+    def predict(self, X):
+        """Predict targets for a list of NetworkX graphs."""
+        check_is_fitted(self, attributes=["encoder_", "estimator_"])
+        return self.estimator_.predict(self.encoder_.transform(list(X)))
+
+    @available_if(lambda self: hasattr(getattr(self, "estimator_", None), "predict_proba"))
+    def predict_proba(self, X):
+        """Return class probabilities when the wrapped classifier provides them."""
+        check_is_fitted(self, attributes=["encoder_", "estimator_"])
+        return self.estimator_.predict_proba(self.encoder_.transform(list(X)))
+
+    @available_if(lambda self: hasattr(getattr(self, "estimator_", None), "decision_function"))
+    def decision_function(self, X):
+        """Return decision scores when the wrapped classifier provides them."""
+        check_is_fitted(self, attributes=["encoder_", "estimator_"])
+        return self.estimator_.decision_function(self.encoder_.transform(list(X)))
+
+
+class NSPPKClassifier(ClassifierMixin, _NSPPKPredictor):
+    """Classify graph inputs using NSPPK features and a scikit-learn estimator.
+
+    ``estimator`` may be ``"linear"`` (LogisticRegression), ``"rf"``
+    (RandomForestClassifier), or a scikit-learn classifier instance. Pass
+    estimator constructor overrides with ``estimator_params``.
+    """
+
+    _task = "classifier"
+
+
+class NSPPKRegressor(RegressorMixin, _NSPPKPredictor):
+    """Regress graph targets using NSPPK features and a scikit-learn estimator.
+
+    ``estimator`` may be ``"linear"`` (Ridge), ``"rf"``
+    (RandomForestRegressor), or a scikit-learn regressor instance. Pass
+    estimator constructor overrides with ``estimator_params``.
+    """
+
+    _task = "regressor"
 
 
 class NodeNSPPK(BaseEstimator, TransformerMixin):
