@@ -1,4 +1,6 @@
 from collections import defaultdict
+from numbers import Integral, Real
+import math
 
 import numpy as np
 from sklearn.ensemble import ExtraTreesClassifier
@@ -38,13 +40,69 @@ class ImportanceNSPPK(object):
         return prepared_graphs
 
     def fit(self, graphs, targets=None):
+        if isinstance(self.n_iter, bool) or not isinstance(self.n_iter, Integral) or self.n_iter < 1:
+            raise ValueError("n_iter must be a positive integer.")
+        if isinstance(self.n_estimators, bool) or not isinstance(self.n_estimators, Integral) or self.n_estimators < 1:
+            raise ValueError("n_estimators must be a positive integer.")
+        if (
+            isinstance(self.quantile, bool)
+            or not isinstance(self.quantile, Real)
+            or not math.isfinite(float(self.quantile))
+            or not 0 <= self.quantile <= 1
+        ):
+            raise ValueError("quantile must be a finite number between 0 and 1.")
+
+        if graphs is None:
+            raise ValueError("graphs must be an iterable containing at least one graph.")
+        try:
+            graphs = list(graphs)
+        except TypeError as exc:
+            raise ValueError("graphs must be an iterable containing at least one graph.") from exc
+        if not graphs:
+            raise ValueError("graphs must contain at least one graph.")
+        if targets is None:
+            raise ValueError("targets are required and must contain one class label per graph.")
+        targets = np.asarray(targets)
+        if targets.ndim != 1:
+            raise ValueError("targets must be a one-dimensional array of class labels.")
+        if len(targets) != len(graphs):
+            raise ValueError(
+                f"targets must contain one label per graph; got {len(targets)} labels "
+                f"for {len(graphs)} graphs."
+            )
+        if targets.dtype.kind in "fc" and np.isnan(targets).any():
+            raise ValueError("targets cannot contain missing or NaN class labels.")
+        if targets.dtype.kind == "O" and any(target is None for target in targets):
+            raise ValueError("targets cannot contain missing class labels.")
+        try:
+            classes, class_counts = np.unique(targets, return_counts=True)
+        except TypeError as exc:
+            raise ValueError("targets must contain mutually comparable class labels.") from exc
+        if len(classes) < 2:
+            raise ValueError("targets must contain at least two distinct classes.")
+        if np.min(class_counts) < 2:
+            raise ValueError("each class must contain at least two graphs for repeated train/test splits.")
+        n_train = int(np.floor(0.7 * len(graphs)))
+        n_test = len(graphs) - n_train
+        if n_train < len(classes) or n_test < len(classes):
+            raise ValueError(
+                "the 70/30 train/test split must leave at least one graph from each class "
+                "in both subsets; provide more graphs or fewer classes."
+            )
+
         node_feature_mtx_list = self.node_nsppk.fit_transform(graphs)
         X = np.vstack([node_feature_mtx.sum(axis=0) for node_feature_mtx in node_feature_mtx_list])
+        if X.ndim != 2 or X.shape[1] == 0:
+            raise ValueError("node_nsppk produced no features to fit importance weights.")
 
         feature_importances = []
         for it in range(self.n_iter):
-            train_X, test_X, train_targets, test_targets = train_test_split(
-                X, targets, train_size=0.7, random_state=it + 1
+            train_X, _, train_targets, _ = train_test_split(
+                X,
+                targets,
+                train_size=0.7,
+                random_state=it + 1,
+                stratify=targets,
             )
             clf = ExtraTreesClassifier(
                 n_estimators=self.n_estimators,

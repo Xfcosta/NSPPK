@@ -92,6 +92,7 @@ self.classifier.fit(attribute_mtx, targets)
 ```
 
 So the clustering model defines the attribute alphabet, and the classifier becomes the reusable mapping from attribute vector to discrete label.
+The built-in `KMeans` uses `random_state=0` so repeated fits on the same input are reproducible within the same scikit-learn version.
 
 ## 3. Transform-Time Attribute Embedding
 

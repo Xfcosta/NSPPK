@@ -1,6 +1,7 @@
 import math
 from collections import defaultdict, Counter
 import copy
+from numbers import Integral, Real
 import networkx as nx
 import numpy as np
 import scipy as sp
@@ -28,7 +29,7 @@ from hash import (
 )
 from graph_io import ensure_graph_labels
 
-__version__ = "0.1.0"
+__version__ = "1.2.0"
 
 _make_rng = _graph_io._make_rng
 _require_rdkit = _graph_io._require_rdkit
@@ -52,6 +53,78 @@ def _resolve_alias(primary_name, primary_value, alias_name, alias_value, default
             f"{primary_value!r} != {alias_value!r}."
         )
     return alias_value
+
+
+def _validate_encoder_parameters(
+    *, radius, distance, connector, nbits, degree_threshold, dense, parallel,
+    node_attribute_key, attribute_dim, attribute_alphabet_size, sigma, use_node_kernel,
+    use_edges_as_features,
+):
+    integer_parameters = {"radius": radius, "distance": distance, "connector": connector}
+    for name, value in integer_parameters.items():
+        if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer.")
+
+    if isinstance(nbits, bool) or not isinstance(nbits, Integral) or not 2 <= nbits <= 30:
+        raise ValueError("nbits must be an integer between 2 and 30.")
+
+    if degree_threshold is not None and (
+        isinstance(degree_threshold, bool)
+        or not isinstance(degree_threshold, Integral)
+        or degree_threshold < 0
+    ):
+        raise ValueError("degree_threshold must be None or a non-negative integer.")
+
+    for name, value in (
+        ("attribute_dim", attribute_dim),
+        ("attribute_alphabet_size", attribute_alphabet_size),
+    ):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, Integral) or value < 1
+        ):
+            raise ValueError(f"{name} must be None or a positive integer.")
+
+    uses_attribute_preprocessing = attribute_dim is not None or attribute_alphabet_size is not None
+    if uses_attribute_preprocessing and not node_attribute_key:
+        raise ValueError(
+            "node_attribute_key is required when attribute_dim or "
+            "attribute_alphabet_size is set."
+        )
+
+    if sigma is not None and (
+        isinstance(sigma, bool)
+        or not isinstance(sigma, Real)
+        or not math.isfinite(float(sigma))
+        or sigma <= 0
+    ):
+        raise ValueError("sigma must be None or a finite positive number.")
+
+    for name, value in (
+        ("dense", dense),
+        ("parallel", parallel),
+        ("use_node_kernel", use_node_kernel),
+        ("use_edges_as_features", use_edges_as_features),
+    ):
+        if not isinstance(value, (bool, np.bool_)):
+            raise ValueError(f"{name} must be a boolean.")
+
+
+_PARAMETER_ALIASES = {"r": "radius", "d": "distance", "c": "connector"}
+
+
+def _normalize_parameter_aliases(params):
+    normalized = dict(params)
+    for alias, canonical in _PARAMETER_ALIASES.items():
+        if alias not in normalized:
+            continue
+        alias_value = normalized.pop(alias)
+        if canonical in normalized and normalized[canonical] != alias_value:
+            raise ValueError(
+                f"Conflicting values for '{canonical}' and '{alias}': "
+                f"{normalized[canonical]!r} != {alias_value!r}."
+            )
+        normalized[canonical] = alias_value
+    return normalized
 
 
 def _set_loaded_label_metadata(estimator, metadata):
@@ -800,6 +873,21 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
     def __init__(self, embedder=None, clustering_predictor=None, classifier=None, radius=1, distance=3, connector=0,
                  nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None, 
                  node_attribute_key=None, edge_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, use_node_kernel=False, sigma=None, use_edges_as_features=True):
+        _validate_encoder_parameters(
+            radius=radius,
+            distance=distance,
+            connector=connector,
+            nbits=nbits,
+            degree_threshold=degree_threshold,
+            dense=dense,
+            parallel=parallel,
+            node_attribute_key=node_attribute_key,
+            attribute_dim=attribute_dim,
+            attribute_alphabet_size=attribute_alphabet_size,
+            sigma=sigma,
+            use_node_kernel=use_node_kernel,
+            use_edges_as_features=use_edges_as_features,
+        )
         self.embedder = embedder
         self.clustering_predictor = clustering_predictor
         self.classifier = classifier
@@ -1048,7 +1136,10 @@ class NSPPK(BaseEstimator, TransformerMixin):
         Initializes the internal estimators based on the current parameters.
         """
         self.embedder = TruncatedSVD(n_components=self.attribute_dim) if self.attribute_dim else None
-        self.clustering_predictor = KMeans(n_clusters=self.attribute_alphabet_size) if self.attribute_alphabet_size else None
+        self.clustering_predictor = KMeans(
+            n_clusters=self.attribute_alphabet_size,
+            random_state=0,
+        ) if self.attribute_alphabet_size else None
         self.classifier = ExtraTreesClassifier(
             n_estimators=300, 
             n_jobs=-1 if self.parallel else None
@@ -1215,6 +1306,9 @@ class NSPPK(BaseEstimator, TransformerMixin):
             'radius': self.radius,
             'distance': self.distance,
             'connector': self.connector,
+            'r': self.radius,
+            'd': self.distance,
+            'c': self.connector,
             'nbits': self.nbits,
             'degree_threshold': self.degree_threshold,
             'dense': self.dense,
@@ -1252,7 +1346,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
         if not params:
             return self
 
-        # Separate parameters for internal estimators
+        # Separate parameters for internal estimators and normalize aliases.
         embedder_params = {}
         clustering_predictor_params = {}
         classifier_params = {}
@@ -1268,10 +1362,52 @@ class NSPPK(BaseEstimator, TransformerMixin):
             else:
                 main_params[key] = value
 
-        # Set main parameters and reinitialize components if needed
+        valid_main_params = set(self.get_params(deep=False))
+        main_params = _normalize_parameter_aliases(main_params)
+        unknown = set(main_params) - valid_main_params
+        if unknown:
+            raise ValueError(
+                f"Invalid parameter(s) for NSPPK: {sorted(unknown)!r}. "
+                f"Valid parameters are: {sorted(valid_main_params)!r}."
+            )
+
+        for key, values, estimator in (
+            ("embedder", embedder_params, self.embedder),
+            ("clustering_predictor", clustering_predictor_params, self.clustering_predictor),
+            ("classifier", classifier_params, self.classifier),
+        ):
+            if values:
+                valid_nested = estimator.get_params(deep=True) if estimator is not None else {}
+                invalid = set(values) - set(valid_nested)
+                if invalid:
+                    raise ValueError(
+                        f"Invalid parameter(s) for {key}: {sorted(invalid)!r}. "
+                        f"Valid parameters are: {sorted(valid_nested)!r}."
+                    )
+
+        candidate_params = self.get_params(deep=False)
+        candidate_params.update(main_params)
+        _validate_encoder_parameters(
+            radius=candidate_params['radius'],
+            distance=candidate_params['distance'],
+            connector=candidate_params['connector'],
+            nbits=candidate_params['nbits'],
+            degree_threshold=candidate_params['degree_threshold'],
+            dense=candidate_params['dense'],
+            parallel=candidate_params['parallel'],
+            node_attribute_key=candidate_params['node_attribute_key'],
+            attribute_dim=candidate_params['attribute_dim'],
+            attribute_alphabet_size=candidate_params['attribute_alphabet_size'],
+            sigma=candidate_params['sigma'],
+            use_node_kernel=candidate_params['use_node_kernel'],
+            use_edges_as_features=candidate_params['use_edges_as_features'],
+        )
+
+        # Set validated main parameters and reinitialize components if needed.
         if main_params:
             for key, value in main_params.items():
                 setattr(self, key, value)
+            self.r, self.d, self.c = self.radius, self.distance, self.connector
             self._initialize_components()
 
         # Set parameters for internal estimators
@@ -1369,6 +1505,65 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
         self.d = distance
         self.c = connector
         
+    def get_params(self, deep=True):
+        """Return the public encoder parameters used by scikit-learn tools."""
+        return {
+            'radius': self.radius,
+            'distance': self.distance,
+            'connector': self.connector,
+            'r': self.radius,
+            'd': self.distance,
+            'c': self.connector,
+            'nbits': self.nbits,
+            'degree_threshold': self.degree_threshold,
+            'dense': self.dense,
+            'parallel': self.parallel,
+            'weight_key': self.weight_key,
+            'node_attribute_key': self.node_attribute_key,
+            'attribute_dim': self.attribute_dim,
+            'attribute_alphabet_size': self.attribute_alphabet_size,
+            'sigma': self.sigma,
+            'use_edges_as_features': self.use_edges_as_features,
+        }
+
+    def set_params(self, **params):
+        """Set validated public parameters and keep the wrapped NSPPK in sync."""
+        if not params:
+            return self
+
+        normalized = _normalize_parameter_aliases(dict(params))
+        valid = set(self.get_params(deep=False))
+        unknown = set(normalized) - valid
+        if unknown:
+            raise ValueError(
+                f"Invalid parameter(s) for NodeNSPPK: {sorted(unknown)!r}. "
+                f"Valid parameters are: {sorted(valid)!r}."
+            )
+
+        candidate = self.get_params(deep=False)
+        candidate.update(normalized)
+        _validate_encoder_parameters(
+            radius=candidate['radius'],
+            distance=candidate['distance'],
+            connector=candidate['connector'],
+            nbits=candidate['nbits'],
+            degree_threshold=candidate['degree_threshold'],
+            dense=candidate['dense'],
+            parallel=candidate['parallel'],
+            node_attribute_key=candidate['node_attribute_key'],
+            attribute_dim=candidate['attribute_dim'],
+            attribute_alphabet_size=candidate['attribute_alphabet_size'],
+            sigma=candidate['sigma'],
+            use_node_kernel=False,
+            use_edges_as_features=candidate['use_edges_as_features'],
+        )
+
+        for key, value in normalized.items():
+            setattr(self, key, value)
+        self.r, self.d, self.c = self.radius, self.distance, self.connector
+        self.nsppk.set_params(**normalized)
+        return self
+
     def set_nbits(self, nbits):
         """
         Set the number of bits for hashing.
@@ -1376,7 +1571,7 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
         Args:
             nbits (int): Number of bits for hashing.
         """
-        self.nsppk.set_nbits(nbits)
+        self.set_params(nbits=nbits)
 
     def __repr__(self):
         """

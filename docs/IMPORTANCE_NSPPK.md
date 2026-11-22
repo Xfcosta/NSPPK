@@ -22,6 +22,8 @@ Each row says which hashed rooted / paired / edge-triplet patterns are active ar
 
 `ImportanceNSPPK` learns a global importance weight per NSPPK feature column. Then, for each node, it sums the weights of the active features in that node row. That sum becomes the node importance score.
 
+`fit(graphs, targets)` requires one one-dimensional class label per graph, with at least two examples per class so the repeated stratified 70/30 splits can retain each class in both subsets.
+
 So the attribution pipeline is:
 
 ```text
