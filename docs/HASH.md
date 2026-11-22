@@ -23,16 +23,17 @@ It does:
 
 1. convert `value` to `str(value)`
 2. encode that string as bytes
-3. compute a seeded 32-bit MurmurHash3 digest
+3. compute a 4-byte BLAKE2s digest
+4. convert the digest directly to an unsigned 32-bit integer
 
 In code terms:
 
 ```python
-value_bytes = str(value).encode()
-hash_int = murmurhash3_32(value_bytes, seed=0, positive=True)
+digest = hashlib.blake2s(str(value).encode(), digest_size=4).digest()
+hash_int = int.from_bytes(digest, "big")
 ```
 
-The hash is non-cryptographic and deterministic for a fixed input and seed. It returns the full unsigned 32-bit result. Every structural object is ultimately hashed through the string form of a Python value or tuple, so values such as `1` and `"1"` still share the same input representation.
+The hash is deterministic for a fixed input. It returns the full unsigned 32-bit result without a separate mask or hexadecimal conversion. Every structural object is ultimately hashed through the string form of a Python value or tuple, so values such as `1` and `"1"` still share the same input representation.
 
 ## 2. Helper Combinators
 

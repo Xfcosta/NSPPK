@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.0] - 2026-11-22
+
+- Added `NSPPKClassifier` and `NSPPKRegressor` wrappers for graph-level supervised learning with built-in `linear` and `rf` shortcuts or custom scikit-learn estimators.
+- Switched structural feature hashing from MurmurHash3 to BLAKE2s with a direct 32-bit digest conversion. Feature IDs differ from version 1.2.1.
+
 ## [1.2.1] - 2026-11-22
 
 - Replaced the SHA-256 primitive with seeded 32-bit MurmurHash3 for faster feature hashing. This changes generated feature IDs and is not compatible with vectors or models created with earlier versions.

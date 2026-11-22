@@ -7,8 +7,9 @@ This project is currently dominated by Python-side graph feature extraction work
 ## Highest-Value Immediate Changes
 
 - Keep `_hash()` fast while validating model quality.
-  - Done: replaced SHA-256 with seeded 32-bit MurmurHash3 in [src/hash.py](src/hash.py).
-  - An earlier cheaper-hash experiment hurt learning-curve quality; compare MurmurHash3 on the representative benchmark before treating it as quality-equivalent.
+  - Current implementation uses a 4-byte BLAKE2s digest and returns the full 32-bit value in [src/hash.py](src/hash.py).
+  - On the 14-bit HIV benchmark, BLAKE2s and SHA-256 had similar average precision with the regularized linear classifier; repeated transforms were about 8% faster with BLAKE2s.
+  - An earlier cheaper structural-hash experiment hurt learning-curve quality; continue validating hash changes on representative tasks.
 
 - Remove `nx.all_shortest_paths()` from the inner loop in `_process_node_features()`.
   - Current code recomputes all shortest paths for many source/target pairs.
@@ -140,7 +141,7 @@ This project is currently dominated by Python-side graph feature extraction work
 
 ## Suggested Implementation Order
 
-1. Compare seeded MurmurHash3 with the previous SHA-256 baseline on the representative learning-curve benchmark.
+1. Validate BLAKE2s feature quality on additional representative datasets and predictor types.
 2. Cache BFS results per source node. Done.
 3. Eliminate `nx.all_shortest_paths()` from the inner loop. Done.
 4. Build CSR matrices directly. Done.
