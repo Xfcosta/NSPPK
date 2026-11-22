@@ -6,10 +6,11 @@ Neighbourhood Subgraph Pairwise Pathway Kernel (NSPPK) converts labeled NetworkX
 
 ## Install
 
-Python 3.10 or newer is required. Install NSPPK from PyPI with:
+Python 3.10 or newer is required. Install the current public version from
+GitHub:
 
 ```bash
-python -m pip install nsppk
+python -m pip install "git+https://github.com/fabriziocosta/NSPPK.git"
 ```
 
 For local development from a checkout, use editable mode instead:
@@ -89,6 +90,7 @@ The `"linear"` shortcut uses logistic regression for classification and Ridge re
 
 ## Documentation
 
+- [Getting started](docs/GETTING_STARTED.md)
 - [API and output reference](docs/API.md)
 - [Graph loading and streaming](docs/IO.md)
 - [Node attributes](docs/ATTRIBUTES_INTEGRATION.md)
