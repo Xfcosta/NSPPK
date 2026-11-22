@@ -6,7 +6,13 @@ Neighbourhood Subgraph Pairwise Pathway Kernel (NSPPK) converts labeled NetworkX
 
 ## Install
 
-Python 3.10 or newer is required. From a checkout:
+Python 3.10 or newer is required. Install NSPPK from PyPI with:
+
+```bash
+python -m pip install nsppk
+```
+
+For local development from a checkout, use editable mode instead:
 
 ```bash
 python -m pip install -e .

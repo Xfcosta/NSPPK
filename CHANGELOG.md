@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.1] - 2026-11-22
+
+- Prepared the first PyPI distribution and added `pip install nsppk` installation instructions.
+- Added project links and package classifiers to the distribution metadata.
+
 ## [1.3.0] - 2026-11-22
 
 - Added `NSPPKClassifier` and `NSPPKRegressor` wrappers for graph-level supervised learning with built-in `linear` and `rf` shortcuts or custom scikit-learn estimators.
