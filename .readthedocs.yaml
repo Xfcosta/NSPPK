@@ -4,6 +4,10 @@ build:
   os: ubuntu-24.04
   tools:
     python: "3.11"
+  jobs:
+    build:
+      html:
+        - sphinx-build -T -j auto -b html -d _build/doctrees -D language=en docs $READTHEDOCS_OUTPUT/html
 
 sphinx:
   configuration: docs/conf.py
