@@ -8,6 +8,18 @@ Use Python 3.10 or newer. From the repository root, install the project in edita
 python -m pip install -e .
 ```
 
+## Build the documentation
+
+Install the documentation extra and build the Sphinx site locally:
+
+```bash
+python -m pip install -e ".[docs]"
+python -m sphinx -b html docs docs/_build/html
+```
+
+The Read the Docs build uses `.readthedocs.yaml` and installs the same `docs`
+extra from `pyproject.toml`.
+
 The repository uses standard-library unittest tests. Run them from the root with:
 
 ```bash

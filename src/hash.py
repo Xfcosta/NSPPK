@@ -28,13 +28,23 @@ def hash_set(iterable):
     return _hash(tuple_representation)
 
 
+def _hash_unordered_triplet(first, second, third):
+    """Hash three unordered values without allocating a sorted list."""
+    if first > second:
+        first, second = second, first
+    if second > third:
+        second, third = third, second
+    if first > second:
+        first, second = second, first
+    return _hash((first, second, third))
+
+
 def node_hash(node_idx, graph):
     uh = _hash(graph.nodes[node_idx]['label'])
-    edges_h = [
+    nh = hash_set(
         _hash((_hash(graph.nodes[v]['label']), _hash(graph.edges[node_idx, v]['label'])))
         for v in graph.neighbors(node_idx)
-    ]
-    nh = hash_set(edges_h)
+    )
     ext_node_h = _hash((uh, nh))
     return ext_node_h
 
@@ -71,27 +81,27 @@ def rooted_graph_hashes(
         for curr_node_idx, dist in node_idxs_to_dist_dict.items()
         if dist <= radius
     })
-    iso_distance_codes_list = [
-        hash_set([
+    iso_distance_codes = tuple(
+        hash_set(
             node_label_hashes[curr_node_idx]
             if dist == 0 else node_hashes[curr_node_idx]
             for curr_node_idx in node_idxs
-        ])
+        )
         for dist, node_idxs in sorted(dist_to_node_idxs_dict.items())
-    ]
+    )
     h_list = [
-        hash_sequence(iso_distance_codes_list[:i])
-        for i in range(1, len(iso_distance_codes_list) + 1)
+        hash_sequence(iso_distance_codes[:i])
+        for i in range(1, len(iso_distance_codes) + 1)
     ]
     return h_list
 
 
 def edge_triplet_hash(u, v, graph):
-    return hash_set([
+    return _hash_unordered_triplet(
         _hash(graph.nodes[u]['label']),
         _hash(graph.edges[u, v]['label']),
         _hash(graph.nodes[v]['label']),
-    ])
+    )
 
 
 def precompute_edge_triplet_hashes(graph):

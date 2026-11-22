@@ -21,6 +21,13 @@ dependencies = [
   "multiprocessing-on-dill>=3.5.0a4",
 ]
 
+[project.optional-dependencies]
+docs = [
+  "sphinx>=7.2,<9",
+  "myst-parser>=2.0,<5",
+  "sphinx-rtd-theme>=2.0,<4",
+]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 py-modules = ["nsppk", "importance_nsppk", "hash", "graph_io", "utils"]

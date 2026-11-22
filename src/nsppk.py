@@ -213,9 +213,19 @@ def _node_ball(graph, center, radius):
 def _build_bfs_cache(graph, max_radius):
     bfs_cache = {}
     for node_idx in graph.nodes():
-        node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=max_radius)
+        if max_radius == 0:
+            # NetworkX treats cutoff=0 as no cutoff in predecessor(), so this
+            # radius-zero case is the source node alone.
+            predecessors = {node_idx: []}
+            node_idxs_to_dist_dict = {node_idx: 0}
+        else:
+            predecessors, node_idxs_to_dist_dict = nx.predecessor(
+                graph,
+                node_idx,
+                cutoff=max_radius,
+                return_seen=True,
+            )
         dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
-        predecessors = nx.predecessor(graph, node_idx, cutoff=max_radius)
         balls_by_radius = []
         ball = set()
         for radius in range(max_radius + 1):
@@ -403,10 +413,10 @@ def _connector_provenance(graph, node_idxs_to_dist_dict, union_of_shortest_paths
     for path_node in union_of_shortest_paths:
         provenance_nodes.update(_node_ball(graph, path_node, connect - 1))
     provenance_edges = _induced_edge_ids(provenance_nodes, neighbors_by_node)
-    union_signature = hash_set([
-        hash_sequence([node_idxs_to_dist_dict[node], rooted_graph_hashes_by_node[node][connect - 1]])
+    union_signature = hash_set(
+        hash_sequence((node_idxs_to_dist_dict[node], rooted_graph_hashes_by_node[node][connect - 1]))
         for node in union_of_shortest_paths
-    ])
+    )
     return provenance_nodes, provenance_edges, union_signature
 
 
@@ -439,7 +449,7 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
             for neighbor in neighbors_by_node[target_node]:
                 triplet_hash = edge_triplet_hashes.get(_edge_key(target_node, neighbor))
                 if triplet_hash is not None:
-                    raw_signature = hash_sequence([dist, triplet_hash])
+                    raw_signature = hash_sequence((dist, triplet_hash))
                     distance_triplet_hash = hash_value(raw_signature, nbits=nbits)
                     accumulator.add(distance_triplet_hash, w)
                     if archive_collector is not None:
@@ -472,7 +482,7 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
                         source_edge_ids = _induced_edge_ids(source_node_ids, neighbors_by_node)
 
                         if connect == 0:
-                            raw_signature = hash_sequence([code_i, dist, code_j])
+                            raw_signature = hash_sequence((code_i, dist, code_j))
                         else:
                             connector_nodes, connector_edges, union_of_shortest_paths_code = _connector_provenance(
                                 graph,
@@ -483,7 +493,7 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
                             source_node_ids.update(connector_nodes)
                             source_edge_ids.update(connector_edges)
                             source_edge_ids.update(union_path_edges)
-                            raw_signature = hash_sequence([code_i, dist, code_j, union_of_shortest_paths_code])
+                            raw_signature = hash_sequence((code_i, dist, code_j, union_of_shortest_paths_code))
 
                         paired_code = hash_value(raw_signature, nbits=nbits)
                         accumulator.add(paired_code, w)
@@ -1503,7 +1513,7 @@ class _NSPPKPredictor(BaseEstimator):
             shortcut = estimator.strip().lower()
             if shortcut == "linear":
                 model = (
-                    LogisticRegression(max_iter=1000)
+                    LogisticRegression(solver="liblinear", max_iter=1000)
                     if self._task == "classifier"
                     else Ridge()
                 )

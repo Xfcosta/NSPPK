@@ -1,150 +1,37 @@
 # TODO
 
-## Speed Up Graph Vectorization
+## Performance work status
 
-This project is currently dominated by Python-side graph feature extraction work in [nsppk.py](/home/fabrizio/code/NSPPK/nsppk.py), not by the classifier. The main hotspots are repeated shortest-path traversals, expensive hashing, NetworkX object overhead, and inefficient sparse matrix construction.
+This board separates completed optimizations from work that remains. Historical benchmark results are evidence for the tested workloads, not a current profile of every dataset or configuration.
 
-## Highest-Value Immediate Changes
+## Solved
 
-- Keep `_hash()` fast while validating model quality.
-  - Current implementation uses a 4-byte BLAKE2s digest and returns the full 32-bit value in [src/hash.py](src/hash.py).
-  - On the 14-bit HIV benchmark, BLAKE2s and SHA-256 had similar average precision with the regularized linear classifier; repeated transforms were about 8% faster with BLAKE2s.
-  - An earlier cheaper structural-hash experiment hurt learning-curve quality; continue validating hash changes on representative tasks.
+- [x] **Use BLAKE2s for the structural hash.** [`src/hash.py`](src/hash.py) hashes the existing string representation to a four-byte digest and converts it directly to a 32-bit integer. On the 14-bit HIV comparison, a regularized logistic model with average-precision tuning gave similar average precision to SHA-256: 0.6230 vs 0.6232 across five paired 70/30 splits. ROC-AUC and balanced accuracy were also close. Three full transforms had median times of 14.46 s for BLAKE2s and 15.61 s for SHA-256. Hash outputs differ from version 1.2.1.
 
-- Remove `nx.all_shortest_paths()` from the inner loop in `_process_node_features()`.
-  - Current code recomputes all shortest paths for many source/target pairs.
-  - This is likely the single most expensive graph-algorithm call in the encoder.
-  - Precompute predecessor maps from one BFS per source node and derive shortest-path unions from those instead.
-  - Done: replaced repeated `nx.all_shortest_paths()` calls with cached predecessor maps and derived shortest-path unions in [src/nsppk.py](/home/fabrizio/code/NSPPK/src/nsppk.py).
+- [x] **Remove shortest-path enumeration from the normal feature path.** [`_prepare_structural_graph`](src/nsppk.py) builds predecessor data before [`_process_node_features`](src/nsppk.py) runs. [`_shortest_path_edge_union`](src/nsppk.py) walks and memoizes the predecessor DAG to collect shortest-path unions. `nx.all_shortest_paths()` remains only as a fallback when that helper receives a graph without the internal BFS cache; normal encoder calls prepare the cache first.
 
-- Reuse BFS results instead of recomputing them.
-  - `rooted_graph_hashes()` runs `nx.single_source_shortest_path_length`.
-  - `_process_node_features()` runs another `nx.single_source_shortest_path_length`.
-  - Cache bounded BFS results per source node once per graph and reuse them in both places.
-  - Done: added a per-graph bounded BFS cache in [src/nsppk.py](/home/fabrizio/code/NSPPK/src/nsppk.py) and rewired `rooted_graph_hashes()`, `_process_node_features()`, and `_node_ball()` to reuse it.
+- [x] **Reuse bounded BFS results during feature extraction.** The per-graph cache supplies distance layers to rooted hashes and feature extraction, and supplies neighborhood balls to `_node_ball()`.
 
-- Build CSR matrices directly instead of creating many `lil_matrix` objects.
-  - `items_to_sparse_histogram()` and `weighted_sparse_histogram()` create a sparse matrix per node using LIL format.
-  - Instead accumulate `rows`, `cols`, `data` arrays and build one CSR matrix per graph.
-  - This should reduce allocator overhead and Python-side sparse mutation cost.
-  - Done: `get_structural_node_vectors()` now accumulates row entries directly and builds one CSR matrix per graph in [src/nsppk.py](/home/fabrizio/code/NSPPK/src/nsppk.py).
+- [x] **Use one BFS traversal per source.** `_build_bfs_cache()` now obtains distances and predecessor lists together from `nx.predecessor(..., return_seen=True)`. Radius zero is handled directly because NetworkX treats `cutoff=0` as unbounded in this API.
 
-- Avoid copying the entire graph in `get_structural_node_vectors()`.
-  - `graph = original_graph.copy()` adds overhead for every graph.
-  - Either cache temporary attributes in place and clean them up, or build a compact internal representation once.
-  - Partial: reduced repeated NetworkX node/edge/neighbor lookups by introducing a graph-local structural cache in [src/nsppk.py](/home/fabrizio/code/NSPPK/src/nsppk.py), but `original_graph.copy()` is still in place.
+- [x] **Build structural node matrices directly as CSR.** `get_structural_node_vectors()` accumulates row, column, and data entries, then constructs one CSR matrix rather than allocating a LIL matrix per node.
 
-## Medium-Sized Refactors
+- [x] **Reduce avoidable allocations in hash-heavy loops.** Feature signatures now use tuple literals instead of temporary lists, set hashes consume generators where possible, rooted distance signatures reuse tuple prefixes, and three-value edge triplets use a sorting network instead of allocating and sorting a list. These changes preserve the tuple-based hash representation.
 
-- Convert NetworkX graphs into a compact internal adjacency representation before feature extraction.
-  - Suggested representation:
-    - `indptr`
-    - `indices`
-    - node label array
-    - edge label array
-    - degree array
-  - This will reduce repeated dictionary lookups like `graph.nodes[...]` and `graph.edges[...]`.
+## Open priorities
 
-- Precompute and cache more graph-local quantities.
-  - Node label hashes
-  - Node hashes
-  - Edge triplet hashes
-  - Rooted graph hashes
-  - Distance layers per source node
-  - Predecessor maps per source node if `connector > 0`
+- [ ] **Measure current bottlenecks.** Profile hashing, BFS and predecessor-union work, sparse assembly, graph copying, and multiprocessing overhead on representative graph sets using the current BLAKE2s implementation.
 
-- Reduce repeated sorting during hashing.
-  - `hash_set()` sorts inputs repeatedly.
-  - If the calling code already has a stable order, avoid re-sorting.
-  - Consider canonical integer encodings that do not require repeated tuple and sort creation.
+- [ ] **Reduce graph copying.** `_prepare_structural_graph()` still copies each input graph. Explore a compact internal representation or safe temporary-state strategy while preserving the caller's graph objects.
 
-- Reduce Python object creation in inner loops.
-  - Avoid building many temporary tuples/lists inside nested loops.
-  - Reuse buffers where possible.
-  - Replace repeated `hash_sequence([a, b, c])` patterns with cheaper integer-mixing utilities.
+- [ ] **Measure remaining `hash_set()` sorting cost.** General variable-length unordered collections still require sorting for permutation-invariant hashes. Profile the remaining calls before considering a broader canonicalization change, and recheck predictive quality if hash semantics change.
 
-- Review whether `connector > 0` is worth the runtime cost.
-  - Connector handling is much more expensive than the rest of the feature extraction.
-  - If benchmark quality is similar with `connector = 0`, that may be the most effective runtime/quality tradeoff.
+- [ ] **Measure the `connector` quality/runtime tradeoff.** Compare `connector=0` with positive values on the same train/test splits and report runtime with predictive metrics.
 
-## Parallelism Improvements
+- [ ] **Compare parallel execution strategies.** Benchmark serial encoding, current graph-subset multiprocessing, and a persistent worker pool. Include pool startup and graph serialization costs.
 
-- Revisit multiprocessing strategy in `paired_*_vector_encoder`.
-  - Current code parallelizes across graph subsets with `multiprocessing_on_dill`.
-  - This may pay substantial serialization cost for many small graphs.
-  - Benchmark:
-    - serial
-    - graph-level multiprocessing
-    - source-node-level parallelism within large graphs
+## Longer-term options
 
-- Use a persistent worker pool across repeated benchmark runs if possible.
-  - Current notebook sweeps `nbits` across many runs.
-  - Recreating pools repeatedly can add avoidable overhead.
-
-- Consider joblib or standard multiprocessing if `multiprocessing_on_dill` is not required.
-  - Dill-based serialization is flexible but can be slower.
-
-## Better Backends Than NetworkX
-
-- Evaluate `rustworkx` as the first replacement candidate.
-  - Likely the best balance of Python usability and lower graph traversal overhead.
-  - Good fit for many small graph traversals.
-
-- Evaluate `igraph` as another strong candidate.
-  - Compact internal representation.
-  - Fast BFS / shortest path implementations.
-
-- Evaluate `NetworKit` if larger-scale graph algorithm performance becomes important.
-
-- Consider `graph-tool` only if the environment can tolerate a heavier installation story.
-
-## Array-Based / Compiled Rewrite Path
-
-- Build a custom graph backend using adjacency arrays and compiled traversal kernels.
-  - Store all graphs in compact arrays in memory.
-  - Run bounded BFS directly over arrays.
-  - Parallelize across graphs or across source nodes.
-  - This is the closest practical equivalent to “NumPy for graphs” for this workload.
-
-- If performance remains critical, move the feature extractor core to:
-  - Numba
-  - Cython
-  - Rust extension
-  - C++ extension
-
-- Best candidate for compiled implementation:
-  - bounded BFS
-  - predecessor-map construction
-  - shortest-path union extraction
-  - feature code accumulation
-
-## Benchmarking / Profiling Tasks
-
-- Add profiling around:
-  - `_hash()`
-  - `rooted_graph_hashes()`
-  - `_process_node_features()`
-  - sparse histogram construction
-  - graph-level parallel encoding
-
-- Measure runtime split by:
-  - hashing
-  - BFS / shortest path traversal
-  - sparse matrix construction
-  - multiprocessing overhead
-
-- Benchmark representative settings:
-  - `connector = 0` vs `connector > 0`
-  - `use_edges_as_features = True` vs `False`
-  - serial vs parallel
-  - current NetworkX backend vs rustworkx / igraph prototype
-
-## Suggested Implementation Order
-
-1. Validate BLAKE2s feature quality on additional representative datasets and predictor types.
-2. Cache BFS results per source node. Done.
-3. Eliminate `nx.all_shortest_paths()` from the inner loop. Done.
-4. Build CSR matrices directly. Done.
-5. Reduce graph copying and repeated NetworkX lookups. Partially done: repeated lookups reduced via cache, graph copying still remains.
-6. Benchmark again.
-7. If still too slow, prototype a `rustworkx` or adjacency-array backend.
+- [ ] Prototype compact adjacency arrays, then compare traversal and end-to-end performance with NetworkX.
+- [ ] If NetworkX remains a bottleneck, evaluate `rustworkx` and `igraph` on the same workload.
+- [ ] If profiling still shows Python traversal dominates, prototype a compiled core for bounded BFS, predecessor-union extraction, and feature accumulation using Numba, Cython, Rust, or C++.

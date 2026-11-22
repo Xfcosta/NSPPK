@@ -97,6 +97,7 @@ Runnable notebooks are in `notebooks/`:
 - `Importance Demo.ipynb`: node and edge importance on a synthetic dataset
 - `Streaming Benchmark.ipynb`: loading and streaming examples
 - `Molecular Graph Learning Curve.ipynb`, `Molecular Graph nbits Benchmark.ipynb`, and `Molecular Graph Speed Benchmark.ipynb`: molecular graph experiments
+- `NSPPK Classifier Benchmark.ipynb`: compare the `linear` and `rf` supervised estimator shortcuts on HIV
 
 Some notebooks require optional chemistry or machine-learning packages beyond NSPPK’s core dependencies. The graph readers and their optional requirements are documented in [IO.md](docs/IO.md).
 
