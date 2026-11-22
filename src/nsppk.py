@@ -1969,10 +1969,10 @@ class _NSPPKPredictor(BaseEstimator):
 class NSPPKClassifier(ClassifierMixin, _NSPPKPredictor):
     """Classify graph inputs using NSPPK features and a scikit-learn estimator.
 
-    ``estimator`` may be ``"linear"`` (a speed-first, one-pass
-    ``SGDClassifier`` with logistic loss), ``"rf"`` (RandomForestClassifier),
-    or a scikit-learn classifier instance. Pass
-    estimator constructor overrides with ``estimator_params``.
+    ``estimator`` defaults to ``"linear"``, a speed-first, one-pass
+    ``SGDClassifier`` with logistic loss. Use ``"rf"`` for a
+    ``RandomForestClassifier`` or pass a scikit-learn classifier instance.
+    Pass estimator constructor overrides with ``estimator_params``.
     """
 
     _task = "classifier"
