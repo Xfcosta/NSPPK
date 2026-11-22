@@ -51,7 +51,7 @@ from nsppk import NSPPKClassifier, NSPPKRegressor
 
 classifier = NSPPKClassifier(
     estimator="linear",
-    estimator_params={"C": 0.5},
+    estimator_params={"max_iter": 5, "penalty": "l2", "alpha": 1e-4},
     nbits=14,
 )
 classifier.fit(train_graphs, y_train)
@@ -66,7 +66,14 @@ regressor.fit(train_graphs, y_train)
 predictions = regressor.predict(test_graphs)
 ```
 
-The `"linear"` shortcut selects `LogisticRegression` for classification and `Ridge` for regression. The `"rf"` shortcut selects `RandomForestClassifier` or `RandomForestRegressor`; both forest shortcuts set `random_state=0` by default. Use `estimator_params` to override shortcut parameters, or pass a scikit-learn estimator instance directly:
+The `"linear"` shortcut selects a speed-first, one-pass
+`SGDClassifier(loss="log_loss")` for classification and `Ridge` for regression.
+The classifier shortcut disables regularization and the intercept to minimize
+fit time, so predictive performance may be lower; pass `estimator_params` to
+tune it or pass a custom classifier instance. The `"rf"` shortcut selects
+`RandomForestClassifier` or `RandomForestRegressor`; both forest shortcuts set
+`random_state=0` by default. Use `estimator_params` to override shortcut
+parameters, or pass a scikit-learn estimator instance directly:
 
 ```python
 from sklearn.linear_model import LogisticRegression

@@ -20,7 +20,7 @@ from sklearn.base import (
 from sklearn.cluster import KMeans
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier, RandomForestRegressor
 from sklearn.decomposition import TruncatedSVD
-from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.linear_model import Ridge, SGDClassifier
 from sklearn.model_selection import train_test_split
 import multiprocessing_on_dill as mp
 
@@ -1851,7 +1851,17 @@ class _NSPPKPredictor(BaseEstimator):
             shortcut = estimator.strip().lower()
             if shortcut == "linear":
                 model = (
-                    LogisticRegression(solver="liblinear", max_iter=1000)
+                    SGDClassifier(
+                        loss="log_loss",
+                        penalty=None,
+                        max_iter=1,
+                        tol=None,
+                        shuffle=False,
+                        learning_rate="constant",
+                        eta0=1.0,
+                        fit_intercept=False,
+                        random_state=0,
+                    )
                     if self._task == "classifier"
                     else Ridge()
                 )
@@ -1959,8 +1969,9 @@ class _NSPPKPredictor(BaseEstimator):
 class NSPPKClassifier(ClassifierMixin, _NSPPKPredictor):
     """Classify graph inputs using NSPPK features and a scikit-learn estimator.
 
-    ``estimator`` may be ``"linear"`` (LogisticRegression), ``"rf"``
-    (RandomForestClassifier), or a scikit-learn classifier instance. Pass
+    ``estimator`` may be ``"linear"`` (a speed-first, one-pass
+    ``SGDClassifier`` with logistic loss), ``"rf"`` (RandomForestClassifier),
+    or a scikit-learn classifier instance. Pass
     estimator constructor overrides with ``estimator_params``.
     """
 

@@ -112,9 +112,10 @@ classifier.fit(train_graphs, train_targets)
 predictions = classifier.predict(test_graphs)
 ```
 
-The `"linear"` shortcut uses logistic regression. You can also pass a custom
-scikit-learn classifier. See the [API reference](API.md) for classifier and
-regressor options.
+The `"linear"` shortcut uses one-pass SGD with logistic loss, configured for
+fast fitting. This speed-first default may trade away predictive performance.
+You can also pass a custom scikit-learn classifier. See the [API reference](API.md)
+for classifier and regressor options.
 
 ## Where to go next
 
