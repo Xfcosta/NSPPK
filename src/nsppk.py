@@ -39,7 +39,7 @@ from hash import (
 )
 from graph_io import ensure_graph_labels
 
-__version__ = "1.3.5"
+__version__ = "1.3.6"
 
 _make_rng = _graph_io._make_rng
 _require_rdkit = _graph_io._require_rdkit
@@ -245,34 +245,40 @@ def _build_structural_cache(graph):
     cache = {
         'neighbors': {},
         'degrees': {},
+        'node_order': {},
         'node_label_hashes': {},
         'node_hashes': {},
         'edge_triplet_hashes': {},
         'rooted_graph_hashes': {},
     }
-    for node_idx in graph.nodes():
+    for node_order, node_idx in enumerate(graph.nodes()):
         neighbors = tuple(graph.neighbors(node_idx))
         cache['neighbors'][node_idx] = neighbors
         cache['degrees'][node_idx] = len(neighbors)
+        cache['node_order'][node_idx] = node_order
     return cache
 
 
-def _induced_edge_ids(source_node_ids, neighbors_by_node):
+def _induced_edge_ids(source_node_ids, neighbors_by_node, node_order=None):
     source_edge_ids = set()
     for u in source_node_ids:
         for v in neighbors_by_node[u]:
-            if v in source_node_ids:
+            if v in source_node_ids and (node_order is None or node_order[u] < node_order[v]):
                 source_edge_ids.add(_edge_key(u, v))
     return source_edge_ids
 
 
-def _shortest_path_edge_union(graph, source, target):
+def _shortest_path_edge_union(graph, source, target, include_edges=True):
     bfs_cache = graph.graph.get('_bfs_cache')
     if bfs_cache is not None:
         source_cache = bfs_cache[source]
         cached_union = source_cache['shortest_path_union_cache'].get(target)
         if cached_union is not None:
-            return cached_union
+            nodes, edges = cached_union
+            if not include_edges:
+                return nodes, set()
+            if edges is not None:
+                return cached_union
         predecessors = source_cache['predecessors']
         if target not in predecessors:
             result = (set(), set())
@@ -280,7 +286,7 @@ def _shortest_path_edge_union(graph, source, target):
             return result
 
         nodes = set()
-        edges = set()
+        edges = set() if include_edges else None
         stack = [target]
         seen = set()
         while stack:
@@ -290,19 +296,21 @@ def _shortest_path_edge_union(graph, source, target):
             seen.add(node)
             nodes.add(node)
             for predecessor in predecessors.get(node, []):
-                edges.add(_edge_key(predecessor, node))
+                if include_edges:
+                    edges.add(_edge_key(predecessor, node))
                 stack.append(predecessor)
 
         result = (nodes, edges)
         source_cache['shortest_path_union_cache'][target] = result
-        return result
+        return result if include_edges else (nodes, set())
 
     shortest_paths = list(nx.all_shortest_paths(graph, source=source, target=target))
     nodes = set()
     edges = set()
     for path in shortest_paths:
         nodes.update(path)
-        edges.update(_edge_key(u, v) for u, v in zip(path, path[1:]))
+        if include_edges:
+            edges.update(_edge_key(u, v) for u, v in zip(path, path[1:]))
     return nodes, edges
 
 
@@ -398,25 +406,34 @@ def _prepare_structural_graph(original_graph, radius, distance, connector, degre
     return graph
 
 
-def _connector_provenance(graph, node_idxs_to_dist_dict, union_of_shortest_paths, connect):
+def _connector_provenance(
+    graph,
+    node_idxs_to_dist_dict,
+    union_of_shortest_paths,
+    connect,
+    include_occurrence_provenance=True,
+):
     if connect <= 0:
         return set(union_of_shortest_paths), set()
 
     structural_cache = graph.graph.get('_structural_cache', {})
     neighbors_by_node = structural_cache.get('neighbors', {})
+    node_order = structural_cache.get('node_order')
     rooted_graph_hashes_by_node = structural_cache.get('rooted_graph_hashes', {})
 
-    provenance_nodes = set(union_of_shortest_paths)
-    provenance_edges = set(_edge_key(u, v) for u, v in zip(sorted(union_of_shortest_paths), sorted(union_of_shortest_paths)[1:]))
-    # Replace the artificial sorted-path edges with actual shortest-path union edges.
-    provenance_edges = set()
-    for path_node in union_of_shortest_paths:
-        provenance_nodes.update(_node_ball(graph, path_node, connect - 1))
-    provenance_edges = _induced_edge_ids(provenance_nodes, neighbors_by_node)
     union_signature = hash_set(
         hash_sequence((node_idxs_to_dist_dict[node], rooted_graph_hashes_by_node[node][connect - 1]))
         for node in union_of_shortest_paths
     )
+
+    if not include_occurrence_provenance:
+        return set(), set(), union_signature
+
+    provenance_nodes = set(union_of_shortest_paths)
+    if connect > 1:
+        for path_node in union_of_shortest_paths:
+            provenance_nodes.update(_node_ball(graph, path_node, connect - 1))
+    provenance_edges = _induced_edge_ids(provenance_nodes, neighbors_by_node, node_order)
     return provenance_nodes, provenance_edges, union_signature
 
 
@@ -424,6 +441,7 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
     # Weighted: inline computation of weight using the Gaussian function.
     structural_cache = graph.graph.get('_structural_cache', {})
     neighbors_by_node = structural_cache.get('neighbors', {})
+    node_order = structural_cache.get('node_order')
     edge_triplet_hashes = structural_cache.get('edge_triplet_hashes', {})
     rooted_graph_hashes_by_node = structural_cache.get('rooted_graph_hashes', {})
     node_bfs_cache = graph.graph.get('_bfs_cache', {}).get(node_idx)
@@ -445,7 +463,10 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
     if use_edges_as_features:
         for target_node, dist in node_idxs_to_dist_dict.items():
             w = gaussian_weight(dist, sigma)
-            path_nodes, path_edges = _shortest_path_edge_union(graph, node_idx, target_node)
+            if archive_collector is not None:
+                path_nodes, path_edges = _shortest_path_edge_union(
+                    graph, node_idx, target_node, include_edges=True
+                )
             for neighbor in neighbors_by_node[target_node]:
                 triplet_hash = edge_triplet_hashes.get(_edge_key(target_node, neighbor))
                 if triplet_hash is not None:
@@ -467,37 +488,63 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
                             source_edge_ids=source_edge_ids,
                         )
 
+    connector_data_by_target = {}
     for radius_i, code_i in enumerate(rooted_graph_hashes_by_node[node_idx]):
         for dist, node_idxs in sorted(dist_to_node_idxs_dict.items()):
             w = gaussian_weight(dist, sigma)
             for curr_node_idx in node_idxs:
-                union_of_shortest_paths = set()
-                union_path_edges = set()
                 if connector > 0:
-                    union_of_shortest_paths, union_path_edges = _shortest_path_edge_union(graph, node_idx, curr_node_idx)
-                for connect in range(connector + 1):
-                    for radius_j, code_j in enumerate(rooted_graph_hashes_by_node[curr_node_idx]):
-                        source_node_ids = _node_ball(graph, node_idx, radius_i)
-                        source_node_ids.update(_node_ball(graph, curr_node_idx, radius_j))
-                        source_edge_ids = _induced_edge_ids(source_node_ids, neighbors_by_node)
-
-                        if connect == 0:
-                            raw_signature = hash_sequence((code_i, dist, code_j))
-                        else:
-                            connector_nodes, connector_edges, union_of_shortest_paths_code = _connector_provenance(
+                    target_connector_data = connector_data_by_target.get(curr_node_idx)
+                    if target_connector_data is None:
+                        union_of_shortest_paths, union_path_edges = _shortest_path_edge_union(
+                            graph,
+                            node_idx,
+                            curr_node_idx,
+                            include_edges=archive_collector is not None,
+                        )
+                        provenance_by_connect = {
+                            connect_depth: _connector_provenance(
                                 graph,
                                 node_idxs_to_dist_dict,
                                 union_of_shortest_paths,
-                                connect,
+                                connect_depth,
+                                include_occurrence_provenance=archive_collector is not None,
                             )
-                            source_node_ids.update(connector_nodes)
-                            source_edge_ids.update(connector_edges)
-                            source_edge_ids.update(union_path_edges)
+                            for connect_depth in range(1, connector + 1)
+                        }
+                        target_connector_data = (
+                            union_of_shortest_paths,
+                            union_path_edges,
+                            provenance_by_connect,
+                        )
+                        connector_data_by_target[curr_node_idx] = target_connector_data
+                    union_of_shortest_paths, union_path_edges, provenance_by_connect = (
+                        target_connector_data
+                    )
+                for connect in range(connector + 1):
+                    for radius_j, code_j in enumerate(rooted_graph_hashes_by_node[curr_node_idx]):
+                        if connect == 0:
+                            raw_signature = hash_sequence((code_i, dist, code_j))
+                        else:
+                            (
+                                connector_nodes,
+                                connector_edges,
+                                union_of_shortest_paths_code,
+                            ) = provenance_by_connect[connect]
                             raw_signature = hash_sequence((code_i, dist, code_j, union_of_shortest_paths_code))
 
                         paired_code = hash_value(raw_signature, nbits=nbits)
                         accumulator.add(paired_code, w)
                         if archive_collector is not None:
+                            source_node_ids = _node_ball(graph, node_idx, radius_i)
+                            source_node_ids.update(_node_ball(graph, curr_node_idx, radius_j))
+                            source_edge_ids = _induced_edge_ids(
+                                source_node_ids, neighbors_by_node, node_order
+                            )
+                            if connect > 0:
+                                source_node_ids.update(connector_nodes)
+                                source_edge_ids.update(connector_edges)
+                                source_edge_ids.update(union_path_edges)
                             archive_collector.add(
                                 feature_id=paired_code,
                                 raw_signature=raw_signature,
@@ -764,7 +811,10 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
     """
     n_cpus = mp.cpu_count()
 
-    if parallel and len(graphs) > n_cpus:
+    # A pool adds noticeable one-shot setup and graph-serialization cost.
+    # Require roughly 1.5 graphs per worker before paying that cost.
+    parallel_threshold = max(n_cpus + 1, (3 * n_cpus + 1) // 2)
+    if parallel and len(graphs) >= parallel_threshold:
         def process_subset(subset):
             return [
                 get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_edges_as_features)

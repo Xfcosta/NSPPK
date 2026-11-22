@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.6] - 2026-11-22
+
+- Improved structural feature extraction by caching connector provenance, skipping archive-only work during ordinary transforms, and reducing repeated induced-edge visits.
+- Tuned the graph-level multiprocessing threshold to avoid pool overhead on smaller batches.
+- Preserved feature outputs while reducing median structural extraction time by 2.36x on the documented 64-graph HIV benchmark.
+
+
 ## [1.3.5] - 2026-11-22
 
 - Updated the README layout and centered project logo.

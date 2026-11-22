@@ -13,9 +13,7 @@ def masked_hash_value(value, bitmask=(2**20 - 1)):
 
 def hash_value(value, nbits=10):
     max_index = 2 ** nbits
-    h = masked_hash_value(value, max_index - 3)
-    h += 2
-    return h
+    return (_hash(value) & (max_index - 3)) + 2
 
 
 def hash_sequence(iterable):
