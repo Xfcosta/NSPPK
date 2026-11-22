@@ -6,8 +6,9 @@
 :width: 220px
 ```
 
-NSPPK converts labeled NetworkX graphs into fixed-width graph or node feature
-vectors for use with scikit-learn.
+NSPPK converts labeled NetworkX graphs into fixed-width graph, node, or edge
+feature vectors for use with scikit-learn. Node and edge attributes can enrich
+those representations as continuous features or as learned discrete labels.
 
 New to NSPPK? Start with the [Getting started guide](GETTING_STARTED.md) to
 install the package, encode a small set of graphs, and understand the output.
@@ -21,6 +22,7 @@ GETTING_STARTED
 API
 IO
 ATTRIBUTES_INTEGRATION
+EDGE_ATTRIBUTES
 IMPORTANCE_NSPPK
 HASH
 reference

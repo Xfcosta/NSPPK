@@ -8,6 +8,10 @@ Pass a list of simple, undirected `networkx.Graph` objects to `fit`, `transform`
 
 For continuous node features, set `node_attribute_key` to the attribute name. Every node in every graph must have a numeric vector at that key, and vectors must have the same width. Attribute preprocessing options require this key.
 
+For continuous edge features, set `edge_attribute_key`. Every edge must have a numeric vector at that key, with a consistent width. Edge vectors follow `graph.edges()` iteration order. Edge attribute preprocessing options require this key.
+
+See [Edge attributes and edge-level features](EDGE_ATTRIBUTES.md) for the endpoint-sum definition, edge-row column layout, graph-level aggregation, preprocessing behavior, and empty-graph details.
+
 `DiGraph` direction and parallel-edge semantics are not represented by the current hash construction. Use ordinary undirected `Graph` inputs.
 
 ## Encoders
@@ -29,7 +33,9 @@ For continuous node features, set `node_attribute_key` to the attribute name. Ev
 | `node_attribute_key` | `None` | Node attribute containing a same-width numeric vector on every node. Enables continuous attribute-structure interactions. |
 | `attribute_dim` | `None` | If set, fit TruncatedSVD on the node vectors and use this many components. Requires `node_attribute_key`; must be positive. |
 | `attribute_alphabet_size` | `None` | If set, cluster node vectors and learn a classifier that predicts cluster labels for new nodes. Requires `node_attribute_key`; must be positive. Built-in KMeans uses `random_state=0`. |
-| `edge_attribute_key` | `None` | Accepted for compatibility, but currently does not affect vectorization. Use discrete edge `label` values for structural edge features. |
+| `edge_attribute_key` | `None` | Edge field containing a same-width numeric vector. Adds an edge-attribute-weighted structural block to graph vectors. |
+| `edge_attribute_dim` | `None` | If set, fit TruncatedSVD on edge vectors and use this many components. Requires `edge_attribute_key`; must be positive. |
+| `edge_attribute_alphabet_size` | `None` | If set, cluster edge vectors and learn a classifier that predicts cluster labels for new edges. Requires `edge_attribute_key`; must be positive. Predicted labels replace edge `label` values in working graph copies. Built-in KMeans uses `random_state=0`. |
 | `use_node_kernel` | `False` | Use the node-graph interaction representation instead of the standard graph sum. This can greatly increase output width. |
 | `sigma` | `None` | If set to a finite positive number, weight contributions by `exp(-(distance ** 2) / sigma ** 2)`. |
 | `use_edges_as_features` | `True` | Include distance-tagged edge-triplet features when true. |
@@ -38,7 +44,7 @@ The constructor also accepts the aliases `r`, `d`, and `c` for `radius`, `distan
 
 ### `NSPPKClassifier` and `NSPPKRegressor`
 
-These supervised estimators accept graph lists directly and combine NSPPK vectorization with a scikit-learn predictor. They expose the same structural and node-attribute settings as `NSPPK`, with `dense=False` by default so estimators receive sparse features.
+These supervised estimators accept graph lists directly and combine NSPPK vectorization with a scikit-learn predictor. They expose the same structural, node-attribute, and edge-attribute settings as `NSPPK`, with `dense=False` by default so estimators receive sparse features.
 
 ```python
 from nsppk import NSPPKClassifier, NSPPKRegressor
@@ -95,6 +101,10 @@ classifier = NSPPKClassifier(
 
 With no continuous node attributes, each matrix has width `2 ** nbits`. With `node_attribute_key` enabled, the matrix also contains attribute and interaction columns. Use the graph’s node iteration order when aligning output rows with node labels.
 
+### `EdgeNSPPK`
+
+`EdgeNSPPK` returns a list of per-graph edge feature matrices. Row `i` corresponds to the `i`th edge in that graph’s `graph.edges()` iteration order. An edge’s structural row is the sum of the structural node rows for its two endpoints. With no edge attributes, each matrix has width `2 ** nbits`; with edge attributes of width `P`, it has width `2 ** nbits + 2P`.
+
 ### `ImportanceNSPPK`
 
 `ImportanceNSPPK(node_nsppk, importance_key='att', n_iter=10, n_estimators=100, quantile=0.5, parallel=True, normalize=True)` learns global feature weights from graph-level targets, then projects them to nodes.
@@ -111,16 +121,19 @@ Call `fit(graphs, targets)` before `transform`. `targets` must be a one-dimensio
 
 ## Output shapes
 
-Let `G` be the number of graphs, `N_g` the number of nodes in graph `g`, `D = 2 ** nbits` the structural width, and `P` the width of the node attribute vector after any embedding.
+Let `G` be the number of graphs, `N_g` and `E_g` the number of nodes and edges in graph `g`, `D = 2 ** nbits` the structural width, and `P` and `Q` the node and edge attribute widths after any embeddings.
 
 | Mode | `dense=False` | `dense=True` |
 | --- | --- | --- |
 | `NSPPK`, no attributes, standard graph mode | CSR matrix, `(G, D)` | NumPy array, `(G, D)` |
 | `NSPPK` with node attributes, standard graph mode | CSR matrix, `(G, P × D)` | NumPy array, `(G, P × D)` |
+| `NSPPK` with edge attributes, no node attributes | CSR matrix, `(G, D + Q × D)` | NumPy array, `(G, D + Q × D)` |
+| `NSPPK` with node and edge attributes | CSR matrix, `(G, (P + Q) × D)` | NumPy array, `(G, (P + Q) × D)` |
 | `NSPPK(use_node_kernel=True)`, no attributes | CSR matrix, `(G, D × D)` | NumPy array, `(G, D × D)` |
 | `NodeNSPPK`, no attributes | list of `G` CSR matrices, each `(N_g, D)` | list of `G` NumPy arrays, each `(N_g, D)` |
+| `EdgeNSPPK`, no attributes | list of `G` CSR matrices, each `(E_g, D)` | list of `G` NumPy arrays, each `(E_g, D)` |
 
-For node features with continuous attributes, each graph’s `NodeNSPPK` matrix has width `D + 2P`. The attribute-bearing node-kernel mode has width `2P × D`. These layouts can be large; sparse output reduces storage for structural feature matrices, while dense output may require substantial memory. Attribute interaction and node-kernel calculations also densify intermediate matrices.
+For node and edge features with continuous attributes, each `NodeNSPPK` or `EdgeNSPPK` matrix has width `D + 2P`. Here `P` is the relevant entity’s attribute width; with both graph-level attribute types active, node and edge widths may differ. The attribute-bearing node-kernel mode has width `2P × D`, plus `Q × D` when edge attributes are enabled. Graph-level NSPPK concatenates the configured node block and edge-attribute-weighted edge block; with edge attributes but no node attributes, the node block remains the unweighted structural node sum. These layouts can be large; sparse output reduces storage for structural feature matrices, while dense output may require substantial memory. Attribute interaction and node-kernel calculations also densify intermediate matrices.
 
 The structural matrix reserves columns 0 and 1 for a constant and node degree. Attribute columns are prepended when continuous attributes are enabled, so those reserved-column meanings apply to the structural block.
 

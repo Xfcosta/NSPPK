@@ -59,6 +59,7 @@ With `nbits=8` and no continuous node attributes, this example produces 256 stru
 
 - **Graph features:** `NSPPK` returns one feature row per graph, as shown above.
 - **Node features:** `NodeNSPPK` returns one node-by-feature matrix per graph. Rows follow each graph’s `graph.nodes()` iteration order.
+- **Edge features:** `EdgeNSPPK` returns one edge-by-feature matrix per graph. Rows follow each graph’s `graph.edges()` iteration order; each edge’s structural row sums the feature rows of its two endpoints.
 - **Prediction:** `NSPPKClassifier` and `NSPPKRegressor` wrap graph vectorization with a scikit-learn estimator.
 
 See the [getting-started guide](docs/GETTING_STARTED.md) for runnable examples of node features and prediction, and the [API reference](docs/API.md) for parameters and output details.

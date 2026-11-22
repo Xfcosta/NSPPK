@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.0] - 2026-11-22
+
+- Added `EdgeNSPPK`, which returns one structural feature row per edge by summing the endpoint node rows.
+- Activated `edge_attribute_key` for graph-level edge attribute weighting and added independent edge embedding and clustering settings.
+- Added Read the Docs guidance and a runnable notebook covering edge row order, interaction columns, learned labels, graph aggregation, and empty graphs.
+- Enabling `edge_attribute_key` now changes graph-vector widths and values; leave it unset to retain the node-only layout.
+
 ## [1.3.6] - 2026-11-22
 
 - Improved structural feature extraction by caching connector provenance, skipping archive-only work during ordinary transforms, and reducing repeated induced-edge visits.

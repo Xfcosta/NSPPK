@@ -1,15 +1,17 @@
 # Attributes Integration
 
-This document explains how NSPPK integrates real-valued node attributes into the hashed structural representation.
+This document explains how NSPPK integrates real-valued node and edge attributes into the hashed structural representation.
 
 The implementation lives mainly in [src/nsppk.py](../src/nsppk.py).
 
-There are two different integration paths:
+For the full edge feature definition, output layout, and empty-edge behavior, see [Edge attributes and edge-level features](EDGE_ATTRIBUTES.md).
+
+There are two integration paths for each entity type:
 
 1. attribute preprocessing before hashing
 2. attribute-structure interaction features during vectorization
 
-These paths can be used separately or together, depending on `node_attribute_key`, `attribute_dim`, and `attribute_alphabet_size`.
+These paths can be used separately or together. Node settings are `node_attribute_key`, `attribute_dim`, and `attribute_alphabet_size`; edge settings are `edge_attribute_key`, `edge_attribute_dim`, and `edge_attribute_alphabet_size`.
 
 ## Overview
 
@@ -335,15 +337,27 @@ Some implementation details are worth keeping in mind:
 - the interaction transforms use magnitude compression:
   - cube root in `get_node_vectors(...)`
   - square root in `get_node_graph_vectors(...)`
-- `edge_attribute_key` is accepted by `NSPPK` but currently has no effect on vectorization; use edge `label` values for structural edge features
+- edge attribute preprocessing and interaction paths are independent of the node attribute settings
 - node attribute interactions can create dense intermediate matrices, so large graphs or large `nbits` values can require substantial memory
 
-## 12. Minimal Mental Model
+## 12. Edge Attributes
+
+Edge attributes follow the same preprocessing pattern with separate edge-specific settings. NSPPK stacks edge vectors in `graph.edges()` iteration order, optionally reduces them with `edge_attribute_dim`, and optionally clusters them with `edge_attribute_alphabet_size`. Predicted clusters replace edge `label` values in working graph copies, so the existing structural hashing path incorporates them through edge labels.
+
+For continuous edge interactions, NSPPK builds one structural row per edge by adding the structural node rows for its two endpoints:
+
+```python
+edge_structural_mtx[e] = node_structural_mtx[u] + node_structural_mtx[v]
+```
+
+`EdgeNSPPK` returns one feature row per edge. With continuous attributes, each row contains the edge attributes, their interactions with the structural edge matrix, and the structural edge row. At graph level, NSPPK aggregates edge attributes against the structural edge rows and concatenates that edge block after the existing node block. A graph with no edges contributes a zero edge block with width determined by the fitted edge attribute width.
+
+## 13. Minimal Mental Model
 
 If you want one compact summary, it is this:
 
-1. real-valued node attributes are optionally reduced and/or discretized
-2. discretized attributes can become the node labels used by the hashing pipeline
-3. continuous attributes are also crossed with the structural node-feature matrix to produce additional numeric features
+1. real-valued node and edge attributes are optionally reduced and/or discretized
+2. discretized attributes can become the labels used by the hashing pipeline
+3. continuous node attributes are crossed with node structural features, and edge attributes with the endpoint-summed edge structural features
 
-That is how NSPPK combines real-valued node descriptors with hashed subgraph structure.
+That is how NSPPK combines real-valued node and edge descriptors with hashed subgraph structure.

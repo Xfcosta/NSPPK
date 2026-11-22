@@ -39,7 +39,7 @@ from hash import (
 )
 from graph_io import ensure_graph_labels
 
-__version__ = "1.3.6"
+__version__ = "2.0.0"
 
 _make_rng = _graph_io._make_rng
 _require_rdkit = _graph_io._require_rdkit
@@ -67,7 +67,8 @@ def _resolve_alias(primary_name, primary_value, alias_name, alias_value, default
 
 def _validate_encoder_parameters(
     *, radius, distance, connector, nbits, degree_threshold, dense, parallel,
-    node_attribute_key, attribute_dim, attribute_alphabet_size, sigma, use_node_kernel,
+    node_attribute_key, edge_attribute_key, attribute_dim, attribute_alphabet_size,
+    edge_attribute_dim, edge_attribute_alphabet_size, sigma, use_node_kernel,
     use_edges_as_features,
 ):
     integer_parameters = {"radius": radius, "distance": distance, "connector": connector}
@@ -88,6 +89,8 @@ def _validate_encoder_parameters(
     for name, value in (
         ("attribute_dim", attribute_dim),
         ("attribute_alphabet_size", attribute_alphabet_size),
+        ("edge_attribute_dim", edge_attribute_dim),
+        ("edge_attribute_alphabet_size", edge_attribute_alphabet_size),
     ):
         if value is not None and (
             isinstance(value, bool) or not isinstance(value, Integral) or value < 1
@@ -99,6 +102,15 @@ def _validate_encoder_parameters(
         raise ValueError(
             "node_attribute_key is required when attribute_dim or "
             "attribute_alphabet_size is set."
+        )
+
+    uses_edge_attribute_preprocessing = (
+        edge_attribute_dim is not None or edge_attribute_alphabet_size is not None
+    )
+    if uses_edge_attribute_preprocessing and not edge_attribute_key:
+        raise ValueError(
+            "edge_attribute_key is required when edge_attribute_dim or "
+            "edge_attribute_alphabet_size is set."
         )
 
     if sigma is not None and (
@@ -638,10 +650,11 @@ def get_edge_attribute_mtx(original_graph, edge_attribute_key):
     Returns:
         numpy.ndarray: The matrix of edge attributes.
     """
-    return np.vstack([
+    edge_attributes = [
         original_graph.edges[edge][edge_attribute_key]
         for edge in original_graph.edges()
-    ])
+    ]
+    return np.vstack(edge_attributes) if edge_attributes else np.empty((0, 0), dtype=float)
 
 def reweight_node_vectors_mtx(node_vectors_mtx, original_graph, weight_key):
     """
@@ -683,7 +696,7 @@ def reweight_edge_vectors_mtx(edge_vectors_mtx, original_graph, weight_key):
     return csr_matrix(edge_vectors_mtx)
 
 
-def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, add_structural_node_information=True, sigma=None, use_edges_as_features=True):
+def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, add_structural_node_information=True, sigma=None, use_edges_as_features=True, structural_node_vectors_mtx=None):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -700,9 +713,11 @@ def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_
     Returns:
         scipy.sparse.csr_matrix: The sparse feature matrix representing the graph.
     """
-    node_vectors_mtx = get_structural_node_vectors(
-        original_graph, radius, distance, connector, nbits, degree_threshold, sigma, use_edges_as_features
-    )
+    node_vectors_mtx = structural_node_vectors_mtx
+    if node_vectors_mtx is None:
+        node_vectors_mtx = get_structural_node_vectors(
+            original_graph, radius, distance, connector, nbits, degree_threshold, sigma, use_edges_as_features
+        )
     if weight_key is not None:
         node_vectors_mtx = reweight_node_vectors_mtx(node_vectors_mtx, original_graph, weight_key)
     if node_attribute_key is not None:
@@ -716,7 +731,73 @@ def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_
     return node_vectors_mtx
 
 
-def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True):
+def get_structural_edge_vectors(original_graph, radius, distance, connector, nbits,
+                                degree_threshold=None, sigma=None, use_edges_as_features=True,
+                                node_vectors_mtx=None):
+    """Build one structural feature row per undirected edge by summing endpoint rows."""
+    if node_vectors_mtx is None:
+        node_vectors_mtx = get_structural_node_vectors(
+            original_graph, radius, distance, connector, nbits, degree_threshold, sigma,
+            use_edges_as_features,
+        )
+    node_idxs = list(original_graph.nodes())
+    node_to_row = {node_idx: row_idx for row_idx, node_idx in enumerate(node_idxs)}
+    edge_vectors = [
+        node_vectors_mtx.getrow(node_to_row[u]) + node_vectors_mtx.getrow(node_to_row[v])
+        for u, v in original_graph.edges()
+    ]
+    if not edge_vectors:
+        return csr_matrix((0, node_vectors_mtx.shape[1]), dtype=node_vectors_mtx.dtype)
+    return sp.sparse.vstack(edge_vectors, format="csr")
+
+
+def get_edge_vectors(original_graph, radius, distance, connector, nbits,
+                     edge_attribute_key=None, degree_threshold=None, sigma=None,
+                     use_edges_as_features=True, edge_attribute_width=None):
+    """Generate one feature row per edge, aligned with ``graph.edges()`` order."""
+    edge_vectors_mtx = get_structural_edge_vectors(
+        original_graph, radius, distance, connector, nbits, degree_threshold,
+        sigma, use_edges_as_features,
+    )
+    if edge_attribute_key is None:
+        return edge_vectors_mtx
+
+    attribute_mtx = get_edge_attribute_mtx(original_graph, edge_attribute_key)
+    if attribute_mtx.shape[1] == 0 and edge_attribute_width:
+        attribute_mtx = np.empty((0, edge_attribute_width), dtype=float)
+    if attribute_mtx.shape[0] != edge_vectors_mtx.shape[0]:
+        raise ValueError("Each edge must have an attribute vector at edge_attribute_key.")
+
+    if edge_vectors_mtx.shape[0] == 0:
+        interactions = csr_matrix((0, attribute_mtx.shape[1]), dtype=float)
+    else:
+        dense_edge_vectors = edge_vectors_mtx.toarray()
+        interaction_mtx = attribute_mtx.T.dot(dense_edge_vectors).dot(dense_edge_vectors.T).T
+        interaction_mtx = np.power(np.abs(interaction_mtx), 1 / 3)
+        interactions = csr_matrix(interaction_mtx)
+    return sp.sparse.hstack(
+        [csr_matrix(attribute_mtx), interactions, edge_vectors_mtx], format="csr"
+    )
+
+
+def get_edge_graph_vector(original_graph, radius, distance, connector, nbits,
+                         edge_attribute_key, degree_threshold=None, sigma=None,
+                         use_edges_as_features=True, edge_attribute_width=None,
+                         node_vectors_mtx=None):
+    """Aggregate structural edge rows through their continuous attributes."""
+    edge_structural_mtx = get_structural_edge_vectors(
+        original_graph, radius, distance, connector, nbits, degree_threshold,
+        sigma, use_edges_as_features, node_vectors_mtx,
+    )
+    attribute_mtx = get_edge_attribute_mtx(original_graph, edge_attribute_key)
+    if attribute_mtx.shape[1] == 0 and edge_attribute_width:
+        attribute_mtx = np.empty((0, edge_attribute_width), dtype=float)
+    if attribute_mtx.shape[0] != edge_structural_mtx.shape[0]:
+        raise ValueError("Each edge must have an attribute vector at edge_attribute_key.")
+    return csr_matrix(attribute_mtx.T.dot(edge_structural_mtx.toarray()).reshape(1, -1))
+
+
+def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True, edge_attribute_key=None, edge_attribute_width=None):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -735,15 +816,31 @@ def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, w
     """
     node_vectors_mtx = get_structural_node_vectors(original_graph, radius, distance, connector, nbits, degree_threshold, sigma, use_edges_as_features)
     node_vectors_mtx = node_vectors_mtx.todense().A
-    attribute_node_vectors_mtx = get_node_vectors(original_graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, add_structural_node_information=False, sigma=sigma, use_edges_as_features=use_edges_as_features)
+    attribute_node_vectors_mtx = get_node_vectors(
+        original_graph, radius, distance, connector, nbits, weight_key,
+        node_attribute_key, degree_threshold, add_structural_node_information=False,
+        sigma=sigma, use_edges_as_features=use_edges_as_features,
+        structural_node_vectors_mtx=sp.sparse.csr_matrix(node_vectors_mtx),
+    )
     vector_ = attribute_node_vectors_mtx.T.dot(node_vectors_mtx)
+    if edge_attribute_key is not None:
+        edge_graph_vector = get_edge_graph_vector(
+            original_graph, radius, distance, connector, nbits,
+            edge_attribute_key, degree_threshold, sigma, use_edges_as_features,
+            edge_attribute_width,
+            node_vectors_mtx=sp.sparse.csr_matrix(node_vectors_mtx),
+        )
+        vector_ = np.hstack([
+            np.asarray(vector_).reshape(1, -1),
+            edge_graph_vector.toarray(),
+        ])
     vector = vector_.reshape(1, -1)
     vector = np.power(np.abs(vector), 1/2)
     vector = csr_matrix(vector)
     return csr_matrix(vector)
 
 
-def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True):
+def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True, edge_attribute_width=None):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -760,20 +857,29 @@ def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_
     Returns:
         scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
     """
-    node_vectors_mtx = get_structural_node_vectors(
+    structural_node_vectors_mtx = get_structural_node_vectors(
         original_graph, radius, distance, connector, nbits, degree_threshold, sigma, use_edges_as_features
     )
+    node_vectors_mtx = structural_node_vectors_mtx
     if weight_key is not None:
         node_vectors_mtx = reweight_node_vectors_mtx(node_vectors_mtx, original_graph, weight_key)
     if node_attribute_key is None:
-        graph_vector = node_vectors_mtx.sum(axis=0)    
+        node_graph_vector = csr_matrix(node_vectors_mtx.sum(axis=0))
     else:
         attribute_mtx = get_node_attribute_matrix(original_graph, node_attribute_key)
         node_vectors_mtx = node_vectors_mtx.todense().A
         vector_ = attribute_mtx.T.dot(node_vectors_mtx)
-        graph_vector = vector_.reshape(1, -1)
-    graph_vector = csr_matrix(graph_vector)
-    return graph_vector
+        node_graph_vector = csr_matrix(vector_.reshape(1, -1))
+
+    if edge_attribute_key is None:
+        return node_graph_vector
+
+    edge_graph_vector = get_edge_graph_vector(
+        original_graph, radius, distance, connector, nbits, edge_attribute_key,
+        degree_threshold, sigma, use_edges_as_features, edge_attribute_width,
+        structural_node_vectors_mtx,
+    )
+    return sp.sparse.hstack([node_graph_vector, edge_graph_vector], format="csr")
 
 
 def split_into_chunks(lst, n):
@@ -791,7 +897,7 @@ def split_into_chunks(lst, n):
     return [lst[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n)]
 
 
-def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True):
+def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True, edge_attribute_width=None):
     """
     Encodes a list of graphs into a sparse matrix of feature vectors.
 
@@ -817,7 +923,7 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
     if parallel and len(graphs) >= parallel_threshold:
         def process_subset(subset):
             return [
-                get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_edges_as_features)
+                get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_edges_as_features, edge_attribute_width)
                 for graph in subset
             ]
 
@@ -827,14 +933,19 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
         graph_vectors = [vec for subset in graph_vectors_subsets for vec in subset]
     else:
         graph_vectors = [
-            get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_edges_as_features)
+            get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_edges_as_features, edge_attribute_width)
             for graph in graphs
         ]
 
     return sp.sparse.vstack(graph_vectors)
 
 
-def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_edges_as_features=True):
+def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits,
+                                     parallel=True, weight_key=None,
+                                     node_attribute_key=None, edge_attribute_key=None,
+                                     degree_threshold=None, sigma=None,
+                                     use_edges_as_features=True,
+                                     edge_attribute_width=None):
     """
     Encodes a list of graphs into a sparse matrix of feature vectors.
 
@@ -857,7 +968,7 @@ def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits
     if parallel and len(graphs) > n_cpus:
         def process_subset(subset):
             return [
-                get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_edges_as_features=use_edges_as_features)
+                get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_edges_as_features=use_edges_as_features, edge_attribute_key=edge_attribute_key, edge_attribute_width=edge_attribute_width)
                 for graph in subset
             ]
 
@@ -867,7 +978,7 @@ def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits
         graph_vectors = [vec for subset in graph_vectors_subsets for vec in subset]
     else:
         graph_vectors = [
-            get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_edges_as_features=use_edges_as_features)
+            get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_edges_as_features=use_edges_as_features, edge_attribute_key=edge_attribute_key, edge_attribute_width=edge_attribute_width)
             for graph in graphs
         ]
 
@@ -914,6 +1025,34 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
     return graph_node_vectors
 
 
+def paired_edge_vector_encoder(graphs, radius, distance, connector, nbits,
+                               parallel=True, edge_attribute_key=None,
+                               degree_threshold=None, sigma=None,
+                               use_edges_as_features=True, edge_attribute_width=None):
+    """Encode each graph as a list of edge feature matrices."""
+    def encode_subset(subset):
+        return [
+            get_edge_vectors(
+                graph, radius, distance, connector, nbits,
+                edge_attribute_key=edge_attribute_key,
+                degree_threshold=degree_threshold,
+                sigma=sigma,
+                use_edges_as_features=use_edges_as_features,
+                edge_attribute_width=edge_attribute_width,
+            )
+            for graph in subset
+        ]
+
+    n_cpus = mp.cpu_count()
+    if parallel and len(graphs) > n_cpus:
+        with mp.Pool(n_cpus) as pool:
+            subsets = pool.map(encode_subset, split_into_chunks(graphs, n_cpus))
+        edge_matrices = [matrix for subset in subsets for matrix in subset]
+    else:
+        edge_matrices = encode_subset(graphs)
+    return edge_matrices
+
+
 class BaseNSPPK(BaseEstimator, TransformerMixin):
     """
     BaseNSPPK is an abstract base class for encoding graphs into feature vectors.
@@ -940,9 +1079,14 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
         use_node_kernel (bool, default=False): Whether to use node-level kernel encoding.
     """
 
-    def __init__(self, embedder=None, clustering_predictor=None, classifier=None, radius=1, distance=3, connector=0,
+    def __init__(self, embedder=None, clustering_predictor=None, classifier=None,
+                 edge_embedder=None, edge_clustering_predictor=None, edge_classifier=None,
+                 radius=1, distance=3, connector=0,
                  nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None, 
-                 node_attribute_key=None, edge_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, use_node_kernel=False, sigma=None, use_edges_as_features=True):
+                 node_attribute_key=None, edge_attribute_key=None, attribute_dim=None,
+                 attribute_alphabet_size=None, edge_attribute_dim=None,
+                 edge_attribute_alphabet_size=None, use_node_kernel=False, sigma=None,
+                 use_edges_as_features=True):
         _validate_encoder_parameters(
             radius=radius,
             distance=distance,
@@ -952,8 +1096,11 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
             dense=dense,
             parallel=parallel,
             node_attribute_key=node_attribute_key,
+            edge_attribute_key=edge_attribute_key,
             attribute_dim=attribute_dim,
             attribute_alphabet_size=attribute_alphabet_size,
+            edge_attribute_dim=edge_attribute_dim,
+            edge_attribute_alphabet_size=edge_attribute_alphabet_size,
             sigma=sigma,
             use_node_kernel=use_node_kernel,
             use_edges_as_features=use_edges_as_features,
@@ -961,6 +1108,9 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
         self.embedder = embedder
         self.clustering_predictor = clustering_predictor
         self.classifier = classifier
+        self.edge_embedder = edge_embedder
+        self.edge_clustering_predictor = edge_clustering_predictor
+        self.edge_classifier = edge_classifier
         self.radius = radius
         self.distance = distance
         self.connector = connector
@@ -973,6 +1123,8 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
         self.edge_attribute_key = edge_attribute_key
         self.attribute_dim = attribute_dim
         self.attribute_alphabet_size = attribute_alphabet_size
+        self.edge_attribute_dim = edge_attribute_dim
+        self.edge_attribute_alphabet_size = edge_attribute_alphabet_size
         self.use_node_kernel = use_node_kernel
         self.sigma = sigma
         self.use_edges_as_features = use_edges_as_features
@@ -995,7 +1147,10 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
         Returns:
             bool: ``True`` when attribute embedding or attribute-label discretization must be learned.
         """
-        return bool(self.node_attribute_key and (self.attribute_dim or self.attribute_alphabet_size))
+        return bool(
+            (self.node_attribute_key and (self.attribute_dim or self.attribute_alphabet_size))
+            or (self.edge_attribute_key and (self.edge_attribute_dim or self.edge_attribute_alphabet_size))
+        )
 
     def fit(self, graphs, targets=None):
         """
@@ -1025,6 +1180,25 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
             if self.attribute_alphabet_size and self.clustering_predictor:
                 targets = self.clustering_predictor.fit_predict(attribute_mtx)
                 self.classifier.fit(attribute_mtx, targets)
+
+        if self.edge_attribute_key:
+            edge_attribute_mtx = np.vstack([
+                graph.edges[u, v][self.edge_attribute_key]
+                for graph in graphs
+                for u, v in graph.edges()
+            ]) if any(graph.number_of_edges() for graph in graphs) else np.empty((0, 0))
+            if edge_attribute_mtx.shape[1]:
+                self.edge_attribute_n_features_in_ = edge_attribute_mtx.shape[1]
+            if self.edge_attribute_dim or self.edge_attribute_alphabet_size:
+                if edge_attribute_mtx.shape[0] == 0:
+                    raise ValueError("Edge attribute preprocessing requires at least one edge.")
+                if self.edge_attribute_dim and self.edge_embedder:
+                    self.edge_embedder.fit(edge_attribute_mtx)
+                    edge_attribute_mtx = self.edge_embedder.transform(edge_attribute_mtx)
+                if self.edge_attribute_alphabet_size and self.edge_clustering_predictor:
+                    edge_targets = self.edge_clustering_predictor.fit_predict(edge_attribute_mtx)
+                    self.edge_classifier.fit(edge_attribute_mtx, edge_targets)
+                self.edge_attribute_n_features_in_ = edge_attribute_mtx.shape[1]
 
         self.is_fitted_ = True
         return self
@@ -1082,6 +1256,47 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
             out_graphs.append(out_graph)
         return out_graphs
 
+    def embed_edge_attributes(self, graphs):
+        """Apply the fitted edge attribute reducer to copies of the input graphs."""
+        if not self.edge_embedder:
+            return graphs
+        out_graphs = []
+        for graph in graphs:
+            edges = list(graph.edges())
+            if not edges:
+                out_graphs.append(graph.copy())
+                continue
+            attribute_mtx = np.vstack([
+                graph.edges[u, v][self.edge_attribute_key] for u, v in edges
+            ])
+            embeddings = self.edge_embedder.transform(attribute_mtx)
+            out_graph = graph.copy()
+            for (u, v), embedding in zip(edges, embeddings):
+                out_graph.edges[u, v]['original_' + self.edge_attribute_key] = graph.edges[u, v][self.edge_attribute_key]
+                out_graph.edges[u, v][self.edge_attribute_key] = embedding
+            out_graphs.append(out_graph)
+        return out_graphs
+
+    def set_discrete_edge_labels(self, graphs):
+        """Replace edge labels with predicted edge attribute cluster labels."""
+        if not self.edge_classifier:
+            return graphs
+        out_graphs = []
+        for graph in graphs:
+            edges = list(graph.edges())
+            if not edges:
+                out_graphs.append(graph.copy())
+                continue
+            attribute_mtx = np.vstack([
+                graph.edges[u, v][self.edge_attribute_key] for u, v in edges
+            ])
+            labels = self.edge_classifier.predict(attribute_mtx)
+            out_graph = graph.copy()
+            for (u, v), label in zip(edges, labels):
+                out_graph.edges[u, v]['label'] = label
+            out_graphs.append(out_graph)
+        return out_graphs
+
     def transform(self, graphs):
         """
         Transforms the input graphs into feature vectors.
@@ -1100,20 +1315,35 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
             graphs = self.embed_attributes(graphs)
         if self.node_attribute_key and self.attribute_alphabet_size:
             graphs = self.set_discrete_labels(graphs)
+        if self.edge_attribute_key and self.edge_attribute_dim:
+            graphs = self.embed_edge_attributes(graphs)
+        if self.edge_attribute_key and self.edge_attribute_alphabet_size:
+            graphs = self.set_discrete_edge_labels(graphs)
+
+        edge_attribute_width = getattr(self, 'edge_attribute_n_features_in_', None)
+        if self.edge_attribute_key and self.edge_attribute_dim:
+            edge_attribute_width = self.edge_attribute_dim
+        if self.edge_attribute_key and edge_attribute_width is None:
+            for graph in graphs:
+                if graph.number_of_edges():
+                    edge_attribute_width = len(graph.edges[next(iter(graph.edges()))][self.edge_attribute_key])
+                    break
 
         if self.use_node_kernel:
             data_mtx = paired_node_graphs_vector_encoder(
-                graphs, 
-                self.radius, 
-                self.distance, 
-                self.connector, 
+                graphs,
+                self.radius,
+                self.distance,
+                self.connector,
                 self.nbits,
-                self.parallel, 
-                self.weight_key,
-                self.node_attribute_key,
-                self.degree_threshold,
-                self.sigma,
-                self.use_edges_as_features
+                parallel=self.parallel,
+                weight_key=self.weight_key,
+                node_attribute_key=self.node_attribute_key,
+                edge_attribute_key=self.edge_attribute_key,
+                degree_threshold=self.degree_threshold,
+                sigma=self.sigma,
+                use_edges_as_features=self.use_edges_as_features,
+                edge_attribute_width=edge_attribute_width,
             )
         else:
             data_mtx = paired_graphs_vector_encoder(
@@ -1128,7 +1358,8 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
                 self.edge_attribute_key,
                 self.degree_threshold,
                 self.sigma,
-                self.use_edges_as_features
+                self.use_edges_as_features,
+                edge_attribute_width,
             )
 
         if self.dense:
@@ -1162,7 +1393,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
     """
 
     def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None,
-                 node_attribute_key=None, edge_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, use_node_kernel=False, sigma=None,
+                 node_attribute_key=None, edge_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None,
+                 edge_attribute_dim=None, edge_attribute_alphabet_size=None, use_node_kernel=False, sigma=None,
                  use_edges_as_features=True, r=None, d=None, c=None):
         radius = _resolve_alias('radius', radius, 'r', r, 1)
         distance = _resolve_alias('distance', distance, 'd', d, 3)
@@ -1179,6 +1411,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
         self.edge_attribute_key = edge_attribute_key
         self.attribute_dim = attribute_dim
         self.attribute_alphabet_size = attribute_alphabet_size
+        self.edge_attribute_dim = edge_attribute_dim
+        self.edge_attribute_alphabet_size = edge_attribute_alphabet_size
         self.use_node_kernel = use_node_kernel
         self.sigma = sigma
         self.use_edges_as_features = use_edges_as_features
@@ -1214,11 +1448,23 @@ class NSPPK(BaseEstimator, TransformerMixin):
             n_estimators=300, 
             n_jobs=-1 if self.parallel else None
         ) if self.attribute_alphabet_size else None
+        self.edge_embedder = TruncatedSVD(n_components=self.edge_attribute_dim) if self.edge_attribute_dim else None
+        self.edge_clustering_predictor = KMeans(
+            n_clusters=self.edge_attribute_alphabet_size,
+            random_state=0,
+        ) if self.edge_attribute_alphabet_size else None
+        self.edge_classifier = ExtraTreesClassifier(
+            n_estimators=300,
+            n_jobs=-1 if self.parallel else None,
+        ) if self.edge_attribute_alphabet_size else None
 
         self.base_nsppk = BaseNSPPK(
             embedder=self.embedder,
             clustering_predictor=self.clustering_predictor,
             classifier=self.classifier,
+            edge_embedder=self.edge_embedder,
+            edge_clustering_predictor=self.edge_clustering_predictor,
+            edge_classifier=self.edge_classifier,
             radius=self.radius,
             distance=self.distance,
             connector=self.connector,
@@ -1231,6 +1477,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
             edge_attribute_key=self.edge_attribute_key,
             attribute_dim=self.attribute_dim,
             attribute_alphabet_size=self.attribute_alphabet_size,
+            edge_attribute_dim=self.edge_attribute_dim,
+            edge_attribute_alphabet_size=self.edge_attribute_alphabet_size,
             use_node_kernel=self.use_node_kernel,
             sigma=self.sigma,
             use_edges_as_features=self.use_edges_as_features
@@ -1246,7 +1494,9 @@ class NSPPK(BaseEstimator, TransformerMixin):
         return f"{self.__class__.__name__}(radius={self.radius}, distance={self.distance}, connector={self.connector}, sigma={self.sigma}, use_edges_as_features={self.use_edges_as_features}" \
                f"nbits={self.nbits}, degree_threshold={self.degree_threshold}, dense={self.dense}, " \
                f"parallel={self.parallel}, weight_key={self.weight_key}, node_attribute_key={self.node_attribute_key}, " \
-               f"attribute_dim={self.attribute_dim}, attribute_alphabet_size={self.attribute_alphabet_size})"
+               f"attribute_dim={self.attribute_dim}, attribute_alphabet_size={self.attribute_alphabet_size}, " \
+               f"edge_attribute_key={self.edge_attribute_key}, edge_attribute_dim={self.edge_attribute_dim}, " \
+               f"edge_attribute_alphabet_size={self.edge_attribute_alphabet_size})"
 
     def fit(self, graphs, targets=None):
         """
@@ -1388,6 +1638,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
             'edge_attribute_key': self.edge_attribute_key,
             'attribute_dim': self.attribute_dim,
             'attribute_alphabet_size': self.attribute_alphabet_size,
+            'edge_attribute_dim': self.edge_attribute_dim,
+            'edge_attribute_alphabet_size': self.edge_attribute_alphabet_size,
             'use_node_kernel': self.use_node_kernel,
             'sigma': self.sigma,
             'use_edges_as_features': self.use_edges_as_features
@@ -1400,6 +1652,12 @@ class NSPPK(BaseEstimator, TransformerMixin):
                 params.update({f'clustering_predictor__{k}': v for k, v in self.clustering_predictor.get_params().items()})
             if self.classifier is not None:
                 params.update({f'classifier__{k}': v for k, v in self.classifier.get_params().items()})
+            if self.edge_embedder is not None:
+                params.update({f'edge_embedder__{k}': v for k, v in self.edge_embedder.get_params().items()})
+            if self.edge_clustering_predictor is not None:
+                params.update({f'edge_clustering_predictor__{k}': v for k, v in self.edge_clustering_predictor.get_params().items()})
+            if self.edge_classifier is not None:
+                params.update({f'edge_classifier__{k}': v for k, v in self.edge_classifier.get_params().items()})
 
         return params
 
@@ -1420,6 +1678,9 @@ class NSPPK(BaseEstimator, TransformerMixin):
         embedder_params = {}
         clustering_predictor_params = {}
         classifier_params = {}
+        edge_embedder_params = {}
+        edge_clustering_predictor_params = {}
+        edge_classifier_params = {}
         main_params = {}
 
         for key, value in params.items():
@@ -1429,6 +1690,12 @@ class NSPPK(BaseEstimator, TransformerMixin):
                 clustering_predictor_params[key.split('__', 1)[1]] = value
             elif key.startswith('classifier__'):
                 classifier_params[key.split('__', 1)[1]] = value
+            elif key.startswith('edge_embedder__'):
+                edge_embedder_params[key.split('__', 1)[1]] = value
+            elif key.startswith('edge_clustering_predictor__'):
+                edge_clustering_predictor_params[key.split('__', 1)[1]] = value
+            elif key.startswith('edge_classifier__'):
+                edge_classifier_params[key.split('__', 1)[1]] = value
             else:
                 main_params[key] = value
 
@@ -1445,6 +1712,9 @@ class NSPPK(BaseEstimator, TransformerMixin):
             ("embedder", embedder_params, self.embedder),
             ("clustering_predictor", clustering_predictor_params, self.clustering_predictor),
             ("classifier", classifier_params, self.classifier),
+            ("edge_embedder", edge_embedder_params, self.edge_embedder),
+            ("edge_clustering_predictor", edge_clustering_predictor_params, self.edge_clustering_predictor),
+            ("edge_classifier", edge_classifier_params, self.edge_classifier),
         ):
             if values:
                 valid_nested = estimator.get_params(deep=True) if estimator is not None else {}
@@ -1466,8 +1736,11 @@ class NSPPK(BaseEstimator, TransformerMixin):
             dense=candidate_params['dense'],
             parallel=candidate_params['parallel'],
             node_attribute_key=candidate_params['node_attribute_key'],
+            edge_attribute_key=candidate_params['edge_attribute_key'],
             attribute_dim=candidate_params['attribute_dim'],
             attribute_alphabet_size=candidate_params['attribute_alphabet_size'],
+            edge_attribute_dim=candidate_params['edge_attribute_dim'],
+            edge_attribute_alphabet_size=candidate_params['edge_attribute_alphabet_size'],
             sigma=candidate_params['sigma'],
             use_node_kernel=candidate_params['use_node_kernel'],
             use_edges_as_features=candidate_params['use_edges_as_features'],
@@ -1487,6 +1760,12 @@ class NSPPK(BaseEstimator, TransformerMixin):
             self.clustering_predictor.set_params(**clustering_predictor_params)
         if classifier_params and self.classifier is not None:
             self.classifier.set_params(**classifier_params)
+        if edge_embedder_params and self.edge_embedder is not None:
+            self.edge_embedder.set_params(**edge_embedder_params)
+        if edge_clustering_predictor_params and self.edge_clustering_predictor is not None:
+            self.edge_clustering_predictor.set_params(**edge_clustering_predictor_params)
+        if edge_classifier_params and self.edge_classifier is not None:
+            self.edge_classifier.set_params(**edge_classifier_params)
 
         # Re-initialize BaseNSPPK with updated components
         if main_params:
@@ -1494,6 +1773,9 @@ class NSPPK(BaseEstimator, TransformerMixin):
                 embedder=self.embedder,
                 clustering_predictor=self.clustering_predictor,
                 classifier=self.classifier,
+                edge_embedder=self.edge_embedder,
+                edge_clustering_predictor=self.edge_clustering_predictor,
+                edge_classifier=self.edge_classifier,
                 radius=self.radius,
                 distance=self.distance,
                 connector=self.connector,
@@ -1506,6 +1788,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
                 edge_attribute_key=self.edge_attribute_key,
                 attribute_dim=self.attribute_dim,
                 attribute_alphabet_size=self.attribute_alphabet_size,
+                edge_attribute_dim=self.edge_attribute_dim,
+                edge_attribute_alphabet_size=self.edge_attribute_alphabet_size,
                 use_node_kernel=self.use_node_kernel,
                 sigma=self.sigma,
                 use_edges_as_features=self.use_edges_as_features
@@ -1535,6 +1819,8 @@ class _NSPPKPredictor(BaseEstimator):
         edge_attribute_key=None,
         attribute_dim=None,
         attribute_alphabet_size=None,
+        edge_attribute_dim=None,
+        edge_attribute_alphabet_size=None,
         use_node_kernel=False,
         sigma=None,
         use_edges_as_features=True,
@@ -1553,6 +1839,8 @@ class _NSPPKPredictor(BaseEstimator):
         self.edge_attribute_key = edge_attribute_key
         self.attribute_dim = attribute_dim
         self.attribute_alphabet_size = attribute_alphabet_size
+        self.edge_attribute_dim = edge_attribute_dim
+        self.edge_attribute_alphabet_size = edge_attribute_alphabet_size
         self.use_node_kernel = use_node_kernel
         self.sigma = sigma
         self.use_edges_as_features = use_edges_as_features
@@ -1633,6 +1921,8 @@ class _NSPPKPredictor(BaseEstimator):
             edge_attribute_key=self.edge_attribute_key,
             attribute_dim=self.attribute_dim,
             attribute_alphabet_size=self.attribute_alphabet_size,
+            edge_attribute_dim=self.edge_attribute_dim,
+            edge_attribute_alphabet_size=self.edge_attribute_alphabet_size,
             use_node_kernel=self.use_node_kernel,
             sigma=self.sigma,
             use_edges_as_features=self.use_edges_as_features,
@@ -1795,8 +2085,11 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             dense=candidate['dense'],
             parallel=candidate['parallel'],
             node_attribute_key=candidate['node_attribute_key'],
+            edge_attribute_key=None,
             attribute_dim=candidate['attribute_dim'],
             attribute_alphabet_size=candidate['attribute_alphabet_size'],
+            edge_attribute_dim=None,
+            edge_attribute_alphabet_size=None,
             sigma=candidate['sigma'],
             use_node_kernel=False,
             use_edges_as_features=candidate['use_edges_as_features'],
@@ -1966,3 +2259,110 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             nodes_data_mtx_list = [mtx.todense().A for mtx in nodes_data_mtx_list]
 
         return nodes_data_mtx_list
+
+
+class EdgeNSPPK(BaseEstimator, TransformerMixin):
+    """Return one feature row per undirected edge in each input graph."""
+
+    def __init__(self, radius=1, distance=3, connector=0, nbits=10,
+                 degree_threshold=None, dense=True, parallel=True,
+                 edge_attribute_key=None, edge_attribute_dim=None,
+                 edge_attribute_alphabet_size=None, sigma=None,
+                 use_edges_as_features=True, r=None, d=None, c=None):
+        radius = _resolve_alias('radius', radius, 'r', r, 1)
+        distance = _resolve_alias('distance', distance, 'd', d, 3)
+        connector = _resolve_alias('connector', connector, 'c', c, 0)
+        self.radius = radius
+        self.distance = distance
+        self.connector = connector
+        self.nbits = nbits
+        self.degree_threshold = degree_threshold
+        self.dense = dense
+        self.parallel = parallel
+        self.edge_attribute_key = edge_attribute_key
+        self.edge_attribute_dim = edge_attribute_dim
+        self.edge_attribute_alphabet_size = edge_attribute_alphabet_size
+        self.sigma = sigma
+        self.use_edges_as_features = use_edges_as_features
+        self.r, self.d, self.c = radius, distance, connector
+        self.nsppk = NSPPK(
+            radius=radius, distance=distance, connector=connector, nbits=nbits,
+            degree_threshold=degree_threshold, dense=dense, parallel=parallel,
+            edge_attribute_key=edge_attribute_key,
+            edge_attribute_dim=edge_attribute_dim,
+            edge_attribute_alphabet_size=edge_attribute_alphabet_size,
+            sigma=sigma, use_edges_as_features=use_edges_as_features,
+        )
+
+    def get_params(self, deep=True):
+        return {
+            'radius': self.radius,
+            'distance': self.distance,
+            'connector': self.connector,
+            'r': self.radius,
+            'd': self.distance,
+            'c': self.connector,
+            'nbits': self.nbits,
+            'degree_threshold': self.degree_threshold,
+            'dense': self.dense,
+            'parallel': self.parallel,
+            'edge_attribute_key': self.edge_attribute_key,
+            'edge_attribute_dim': self.edge_attribute_dim,
+            'edge_attribute_alphabet_size': self.edge_attribute_alphabet_size,
+            'sigma': self.sigma,
+            'use_edges_as_features': self.use_edges_as_features,
+        }
+
+    def set_params(self, **params):
+        if not params:
+            return self
+        normalized = _normalize_parameter_aliases(dict(params))
+        valid = set(self.get_params(deep=False))
+        unknown = set(normalized) - valid
+        if unknown:
+            raise ValueError(
+                f"Invalid parameter(s) for EdgeNSPPK: {sorted(unknown)!r}. "
+                f"Valid parameters are: {sorted(valid)!r}."
+            )
+        self.nsppk.set_params(**normalized)
+        for key, value in normalized.items():
+            setattr(self, key, value)
+        self.r, self.d, self.c = self.radius, self.distance, self.connector
+        return self
+
+    def fit(self, graphs, targets=None):
+        self.nsppk.fit(graphs, targets)
+        return self
+
+    def transform(self, graphs):
+        base = self.nsppk.base_nsppk
+        check_is_fitted(base, 'is_fitted_')
+        graphs = list(graphs)
+        if base.edge_attribute_key and base.edge_attribute_dim:
+            graphs = base.embed_edge_attributes(graphs)
+        if base.edge_attribute_key and base.edge_attribute_alphabet_size:
+            graphs = base.set_discrete_edge_labels(graphs)
+
+        edge_attribute_width = getattr(base, 'edge_attribute_n_features_in_', None)
+        if base.edge_attribute_key and base.edge_attribute_dim:
+            edge_attribute_width = base.edge_attribute_dim
+        if base.edge_attribute_key and edge_attribute_width is None:
+            for graph in graphs:
+                if graph.number_of_edges():
+                    edge_attribute_width = len(
+                        graph.edges[next(iter(graph.edges()))][base.edge_attribute_key]
+                    )
+                    break
+
+        edge_matrices = paired_edge_vector_encoder(
+            graphs, base.radius, base.distance, base.connector, base.nbits,
+            parallel=base.parallel,
+            edge_attribute_key=base.edge_attribute_key,
+            degree_threshold=base.degree_threshold,
+            sigma=base.sigma,
+            use_edges_as_features=base.use_edges_as_features,
+            edge_attribute_width=edge_attribute_width,
+        )
+        if base.dense:
+            edge_matrices = [matrix.toarray() for matrix in edge_matrices]
+        return edge_matrices

@@ -81,6 +81,20 @@ node_features = node_encoder.fit_transform(graphs)
 print(node_features[0].shape)  # (3, 256)
 ```
 
+## Get one feature row per edge
+
+Use `EdgeNSPPK` for per-edge representations. Each edge row combines the structural rows of its two endpoints, and rows align with `graph.edges()` order:
+
+```python
+from nsppk import EdgeNSPPK
+
+edge_encoder = EdgeNSPPK(nbits=8, dense=False, parallel=False)
+edge_features = edge_encoder.fit_transform(graphs)
+print(edge_features[0].shape)  # (number_of_edges, 256)
+```
+
+See the [edge attributes guide](EDGE_ATTRIBUTES.md) for continuous edge features, cluster-derived edge labels, and graph-level edge blocks.
+
 ## Use features in a classifier
 
 `NSPPKClassifier` combines graph vectorization with a scikit-learn classifier.

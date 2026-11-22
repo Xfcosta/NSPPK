@@ -13,6 +13,9 @@ Encoders
 
 .. autoclass:: nsppk.NodeNSPPK
    :members:
+
+.. autoclass:: nsppk.EdgeNSPPK
+   :members:
    :show-inheritance:
 
 Predictors
