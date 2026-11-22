@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nsppk"
-version = "1.3.3"
+version = "1.3.4"
 description = "Neighbourhood Subgraph Pairwise Pathway Kernel for graph feature extraction."
 readme = "README.md"
 requires-python = ">=3.10"
