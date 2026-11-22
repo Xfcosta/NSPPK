@@ -17,7 +17,7 @@ jobs:
       name: pypi
       url: https://pypi.org/project/nsppk/
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - name: Check out release tag
@@ -44,3 +44,24 @@ jobs:
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          NOTES_FILE="$(mktemp)"
+          awk -v header="## [$VERSION]" '
+            $0 == header || index($0, header " - ") == 1 { in_section = 1; next }
+            in_section && /^## \[/ { exit }
+            in_section { print }
+          ' CHANGELOG.md > "$NOTES_FILE"
+          test -s "$NOTES_FILE"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "GitHub Release $RELEASE_TAG already exists."
+          else
+            gh release create "$RELEASE_TAG" \
+              --title "NSPPK $RELEASE_TAG" \
+              --notes-file "$NOTES_FILE"
+          fi
