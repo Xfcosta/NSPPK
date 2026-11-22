@@ -1,5 +1,11 @@
 # NSPPK documentation
 
+```{image} _static/nsppk-graph-mark.png
+:alt: NSPPK graph mark: a diamond graph connected to a four-clique
+:align: center
+:width: 640px
+```
+
 NSPPK converts labeled NetworkX graphs into fixed-width graph or node feature
 vectors for use with scikit-learn.
 

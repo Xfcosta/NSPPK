@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.2] - 2026-11-22
+
+- Added the NSPPK graph mark to the README and documentation landing page.
+- Refreshed the PyPI project description with the centered README logo.
+
 ## [1.3.1] - 2026-11-22
 
 - Prepared the first PyPI distribution and added `pip install nsppk` installation instructions.
