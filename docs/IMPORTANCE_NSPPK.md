@@ -1,6 +1,6 @@
 # ImportanceNSPPK
 
-This document explains how [ImportanceNSPPK](/home/fabrizio/code/NSPPK/src/importance_nsppk.py) works and how it relates to `NodeNSPPK`.
+This document explains how [ImportanceNSPPK](../src/importance_nsppk.py) works and how it relates to `NodeNSPPK`.
 
 `ImportanceNSPPK` is not a separate graph kernel. It is a post hoc attribution layer built on top of node-level NSPPK features.
 
@@ -22,7 +22,7 @@ Each row says which hashed rooted / paired / edge-triplet patterns are active ar
 
 `ImportanceNSPPK` learns a global importance weight per NSPPK feature column. Then, for each node, it sums the weights of the active features in that node row. That sum becomes the node importance score.
 
-`fit(graphs, targets)` requires one one-dimensional class label per graph, with at least two examples per class so the repeated stratified 70/30 splits can retain each class in both subsets.
+`fit(graphs, targets)` requires one one-dimensional class label per graph. Each class needs at least two graphs, and the dataset must be large enough for both sides of the repeated stratified 70/30 split to contain every class.
 
 So the attribution pipeline is:
 
@@ -36,7 +36,7 @@ graph
 
 ## Constructor Parameters
 
-From [src/importance_nsppk.py](/home/fabrizio/code/NSPPK/src/importance_nsppk.py), the main parameters are:
+From [src/importance_nsppk.py](../src/importance_nsppk.py), the main parameters are:
 
 - `node_nsppk`: a fitted or fit-capable `NodeNSPPK` instance
 - `importance_key`: node/edge attribute name where scores are stored
@@ -48,7 +48,7 @@ From [src/importance_nsppk.py](/home/fabrizio/code/NSPPK/src/importance_nsppk.py
 
 ## 1. Fit Phase
 
-The main fit logic is [ImportanceNSPPK.fit(...)](/home/fabrizio/code/NSPPK/src/importance_nsppk.py#L38).
+The main fit logic is [ImportanceNSPPK.fit(...)](../src/importance_nsppk.py).
 
 ### Step 1.1: Compute node-level NSPPK features
 
@@ -89,21 +89,25 @@ This means each column in `X` corresponds to one hashed NSPPK feature id.
 
 For `n_iter` rounds:
 
-1. split the graph dataset into train and test subsets
+1. split the graph dataset into stratified train and test subsets, using 70% for training
 2. fit an `ExtraTreesClassifier`
 3. store `clf.feature_importances_`
 
 In code:
 
 ```python
-train_X, test_X, train_targets, test_targets = train_test_split(
-    X, targets, train_size=0.7, random_state=it + 1
+train_X, _, train_targets, _ = train_test_split(
+    X,
+    targets,
+    train_size=0.7,
+    random_state=it + 1,
+    stratify=targets,
 )
 clf = ExtraTreesClassifier(...).fit(train_X, train_targets)
 feature_importances.append(clf.feature_importances_)
 ```
 
-The test split is used only to vary the train subset across iterations. The current implementation does not score on `test_X`; it uses repeated random subsetting as a stability device.
+The held-out split is not scored. Repeated stratified resampling is used as a stability device for feature importances, not as a model evaluation procedure. The code also validates the target length and class counts before encoding.
 
 ### Step 1.4: Aggregate importance across runs
 
@@ -172,7 +176,7 @@ This is the core learned object used later for attribution.
 
 ## 2. Transform Phase
 
-The projection back to graph nodes happens in [ImportanceNSPPK.transform(...)](/home/fabrizio/code/NSPPK/src/importance_nsppk.py#L132).
+The projection back to graph nodes happens in [ImportanceNSPPK.transform(...)](../src/importance_nsppk.py).
 
 ### Step 2.1: Recompute node-level feature matrices
 
@@ -265,8 +269,8 @@ This is useful for inspection and downstream visualization.
 
 This part is handled by:
 
-- [build_feature_archive(...)](/home/fabrizio/code/NSPPK/src/importance_nsppk.py#L72)
-- [get_top_features(...)](/home/fabrizio/code/NSPPK/src/importance_nsppk.py#L104)
+- [build_feature_archive(...)](../src/importance_nsppk.py)
+- [get_top_features(...)](../src/importance_nsppk.py)
 
 ### Step 3.1: Replay the NSPPK feature extraction path
 
@@ -337,7 +341,7 @@ to:
 
 If the `NodeNSPPK` instance uses real-valued node attributes, `ImportanceNSPPK` mirrors the same preprocessing before archive construction.
 
-That logic lives in [_prepare_graphs_for_node_nsppk(...)](/home/fabrizio/code/NSPPK/src/importance_nsppk.py#L29).
+That logic lives in [_prepare_graphs_for_node_nsppk(...)](../src/importance_nsppk.py).
 
 It applies:
 

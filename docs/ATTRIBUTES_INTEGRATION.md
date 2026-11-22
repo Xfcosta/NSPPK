@@ -2,7 +2,7 @@
 
 This document explains how NSPPK integrates real-valued node attributes into the hashed structural representation.
 
-The implementation lives mainly in [src/nsppk.py](/home/fabrizio/code/NSPPK/src/nsppk.py).
+The implementation lives mainly in [src/nsppk.py](../src/nsppk.py).
 
 There are two different integration paths:
 
@@ -33,7 +33,7 @@ The high-level flow is:
 
 NSPPK expects each node to carry a real-valued vector under `graph.nodes[node_idx][node_attribute_key]`.
 
-The helper [get_node_attribute_matrix(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L463) extracts those node vectors and stacks them into a matrix:
+The helper [get_node_attribute_matrix(...)](../src/nsppk.py) extracts those node vectors and stacks them into a matrix:
 
 ```python
 attribute_mtx = np.vstack([
@@ -48,7 +48,7 @@ So if a graph has `N` nodes and attribute dimension `D`, then:
 
 ## 2. Fitting The Attribute Pipeline
 
-During [BaseNSPPK.fit(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L821), NSPPK first concatenates attributes from all training graphs:
+During [BaseNSPPK.fit(...)](../src/nsppk.py), NSPPK first concatenates attributes from all training graphs:
 
 ```python
 attribute_mtx = np.vstack([
@@ -62,7 +62,7 @@ This gives one global training matrix over all nodes in all fit graphs.
 
 ### 2.1 Optional dimensionality reduction
 
-If `attribute_dim` is set, NSPPK builds a `TruncatedSVD` instance in [NSPPK.__init__(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L986) and fits it on the stacked node attributes:
+If `attribute_dim` is set, NSPPK builds a `TruncatedSVD` instance in [NSPPK.__init__(...)](../src/nsppk.py) and fits it on the stacked node attributes:
 
 ```python
 self.embedder.fit(attribute_mtx)
@@ -96,7 +96,7 @@ The built-in `KMeans` uses `random_state=0` so repeated fits on the same input a
 
 ## 3. Transform-Time Attribute Embedding
 
-During [BaseNSPPK.transform(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L900), if `attribute_dim` is active, NSPPK first calls [embed_attributes(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L853).
+During [BaseNSPPK.transform(...)](../src/nsppk.py), if `attribute_dim` is active, NSPPK first calls [embed_attributes(...)](../src/nsppk.py).
 
 For each graph:
 
@@ -118,7 +118,7 @@ This means later stages will see the embedded attribute vector rather than the o
 
 ## 4. Transform-Time Discrete Label Injection
 
-If `attribute_alphabet_size` is active, NSPPK next calls [set_discrete_labels(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L880).
+If `attribute_alphabet_size` is active, NSPPK next calls [set_discrete_labels(...)](../src/nsppk.py).
 
 For each graph:
 
@@ -151,7 +151,7 @@ After optional embedding and optional discrete relabeling, NSPPK continues with 
 - paired rooted subgraph hashing
 - optional edge-triplet features
 
-That process is described in [docs/HASH.md](/home/fabrizio/code/NSPPK/docs/HASH.md).
+That process is described in [docs/HASH.md](HASH.md).
 
 If `attribute_alphabet_size` is active, the node labels used there may already be derived from the real-valued attribute vectors.
 
@@ -159,9 +159,9 @@ If `attribute_alphabet_size` is active, the node labels used there may already b
 
 A second integration path happens later in the vectorizer functions:
 
-- [get_node_vectors(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L535)
-- [get_node_graph_vectors(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L568)
-- [get_graph_vector(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L595)
+- [get_node_vectors(...)](../src/nsppk.py)
+- [get_node_graph_vectors(...)](../src/nsppk.py)
+- [get_graph_vector(...)](../src/nsppk.py)
 
 This path uses the real-valued node attribute matrix together with the structural node-feature matrix.
 
@@ -184,7 +184,7 @@ then:
 
 ### 6.2 Crossing attributes with structural features
 
-If `node_attribute_key` is not `None`, [get_node_vectors(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L535) does:
+If `node_attribute_key` is not `None`, [get_node_vectors(...)](../src/nsppk.py) does:
 
 ```python
 attribute_mtx = get_node_attribute_matrix(original_graph, node_attribute_key)
@@ -226,7 +226,7 @@ hstack([attribute_mtx, interaction_features])
 
 ## 7. Graph-Level Attribute Integration
 
-For graph-level vectors, [get_graph_vector(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L595) uses a simpler aggregation when `node_attribute_key` is present:
+For graph-level vectors, [get_graph_vector(...)](../src/nsppk.py) uses a simpler aggregation when `node_attribute_key` is present:
 
 ```python
 attribute_mtx = get_node_attribute_matrix(original_graph, node_attribute_key)
@@ -253,7 +253,7 @@ to:
 
 ## 8. Node-Graph Kernel Variant
 
-The node-kernel path in [get_node_graph_vectors(...)](/home/fabrizio/code/NSPPK/src/nsppk.py#L568) also uses the attribute-enriched node vectors:
+The node-kernel path in [get_node_graph_vectors(...)](../src/nsppk.py) also uses the attribute-enriched node vectors:
 
 ```python
 attribute_node_vectors_mtx = get_node_vectors(..., add_structural_node_information=False)
@@ -335,7 +335,8 @@ Some implementation details are worth keeping in mind:
 - the interaction transforms use magnitude compression:
   - cube root in `get_node_vectors(...)`
   - square root in `get_node_graph_vectors(...)`
-- edge attributes are currently much less integrated than node attributes; the real-valued attribute integration described here is primarily about `node_attribute_key`
+- `edge_attribute_key` is accepted by `NSPPK` but currently has no effect on vectorization; use edge `label` values for structural edge features
+- node attribute interactions can create dense intermediate matrices, so large graphs or large `nbits` values can require substantial memory
 
 ## 12. Minimal Mental Model
 

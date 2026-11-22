@@ -1,13 +1,10 @@
-import hashlib
 from collections import defaultdict
+from sklearn.utils import murmurhash3_32
 
 
 def _hash(value):
-    value_str = str(value)
-    value_bytes = value_str.encode()
-    sha256_hash = hashlib.sha256(value_bytes).hexdigest()
-    hash_int = int(sha256_hash, 16) & (2**30 - 1)
-    return hash_int
+    value_bytes = str(value).encode()
+    return murmurhash3_32(value_bytes, seed=0, positive=True)
 
 
 def masked_hash_value(value, bitmask=(2**20 - 1)):

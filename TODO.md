@@ -6,12 +6,9 @@ This project is currently dominated by Python-side graph feature extraction work
 
 ## Highest-Value Immediate Changes
 
-- Replace cryptographic hashing in `_hash()` with a much cheaper non-cryptographic integer hash.
-  - Current code uses `hashlib.sha256` for every hashed object.
-  - Feature hashing does not require cryptographic security.
-  - Likely one of the easiest large wins.
-  - Evaluated and rejected for the current benchmark: replacing `sha256` with a cheaper structural hash hurt learning-curve quality.
-  - Final accepted state keeps the original `sha256`-based `_hash()` in [src/hash.py](/home/fabrizio/code/NSPPK/src/hash.py).
+- Keep `_hash()` fast while validating model quality.
+  - Done: replaced SHA-256 with seeded 32-bit MurmurHash3 in [src/hash.py](src/hash.py).
+  - An earlier cheaper-hash experiment hurt learning-curve quality; compare MurmurHash3 on the representative benchmark before treating it as quality-equivalent.
 
 - Remove `nx.all_shortest_paths()` from the inner loop in `_process_node_features()`.
   - Current code recomputes all shortest paths for many source/target pairs.
@@ -143,7 +140,7 @@ This project is currently dominated by Python-side graph feature extraction work
 
 ## Suggested Implementation Order
 
-1. Replace SHA-256 hashing with a cheap integer hash. Rejected for the benchmark; original `sha256` hash kept.
+1. Compare seeded MurmurHash3 with the previous SHA-256 baseline on the representative learning-curve benchmark.
 2. Cache BFS results per source node. Done.
 3. Eliminate `nx.all_shortest_paths()` from the inner loop. Done.
 4. Build CSR matrices directly. Done.

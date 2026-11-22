@@ -1,6 +1,6 @@
 # Hashing Procedure
 
-This document describes the hashing path implemented in [src/hash.py](/home/fabrizio/code/NSPPK/src/hash.py) and consumed by [src/nsppk.py](/home/fabrizio/code/NSPPK/src/nsppk.py).
+This document describes the hashing path implemented in [src/hash.py](../src/hash.py) and consumed by [src/nsppk.py](../src/nsppk.py).
 
 The goal is to explain how NSPPK turns a labeled local subgraph pattern into a final integer feature id.
 
@@ -17,26 +17,22 @@ There is also an edge-triplet feature path that hashes a distance plus one label
 
 ## 1. Primitive Hash
 
-The base hash function is `_hash(value)` in [src/hash.py](/home/fabrizio/code/NSPPK/src/hash.py).
+The base hash function is `_hash(value)` in [src/hash.py](../src/hash.py).
 
 It does:
 
 1. convert `value` to `str(value)`
 2. encode that string as bytes
-3. compute `sha256`
-4. convert the digest to an integer
-5. keep only the low 30 bits
+3. compute a seeded 32-bit MurmurHash3 digest
 
 In code terms:
 
 ```python
-value_str = str(value)
-value_bytes = value_str.encode()
-sha256_hash = hashlib.sha256(value_bytes).hexdigest()
-hash_int = int(sha256_hash, 16) & (2**30 - 1)
+value_bytes = str(value).encode()
+hash_int = murmurhash3_32(value_bytes, seed=0, positive=True)
 ```
 
-So every structural object is ultimately hashed through the string form of a Python value or tuple.
+The hash is non-cryptographic and deterministic for a fixed input and seed. It returns the full unsigned 32-bit result. Every structural object is ultimately hashed through the string form of a Python value or tuple, so values such as `1` and `"1"` still share the same input representation.
 
 ## 2. Helper Combinators
 
@@ -44,7 +40,7 @@ The next helpers define how multiple hashed objects are merged.
 
 ### `hash_sequence(iterable)`
 
-Defined in [src/hash.py](/home/fabrizio/code/NSPPK/src/hash.py).
+Defined in [src/hash.py](../src/hash.py).
 
 - converts the input to a tuple
 - preserves order
@@ -54,7 +50,7 @@ Use this when order matters.
 
 ### `hash_set(iterable)`
 
-Defined in [src/hash.py](/home/fabrizio/code/NSPPK/src/hash.py).
+Defined in [src/hash.py](../src/hash.py).
 
 - sorts the input
 - converts it to a tuple
@@ -66,7 +62,7 @@ This is how NSPPK gets permutation invariance for neighbor sets and isodistance 
 
 ## 3. Node Label Hash
 
-During structural preprocessing in [_prepare_structural_graph(...)](/home/fabrizio/code/NSPPK/src/nsppk.py), each node gets:
+During structural preprocessing in [_prepare_structural_graph(...)](../src/nsppk.py), each node gets:
 
 ```python
 node_label_hash = _hash(graph.nodes[node_idx]['label'])
@@ -76,7 +72,7 @@ This is the hash of the raw discrete node label only.
 
 ## 4. Extended Node Hash
 
-The next level is `node_hash(node_idx, graph)` in [src/hash.py](/home/fabrizio/code/NSPPK/src/hash.py).
+The next level is `node_hash(node_idx, graph)` in [src/hash.py](../src/hash.py).
 
 For one node `u`, it computes:
 
@@ -127,7 +123,7 @@ These values are precomputed once in `precompute_edge_triplet_hashes(graph)`.
 
 ## 6. Rooted Subgraph Hashes
 
-The rooted subgraph logic lives in `rooted_graph_hashes(...)` in [src/hash.py](/home/fabrizio/code/NSPPK/src/hash.py).
+The rooted subgraph logic lives in `rooted_graph_hashes(...)` in [src/hash.py](../src/hash.py).
 
 Take a root node `u` and a maximum radius `R`.
 
@@ -189,7 +185,7 @@ Important detail:
 
 ## 7. Structural Preprocessing Cache
 
-Before feature extraction, [_prepare_structural_graph(...)](/home/fabrizio/code/NSPPK/src/nsppk.py) computes and stores:
+Before feature extraction, [_prepare_structural_graph(...)](../src/nsppk.py) computes and stores:
 
 - `node_label_hashes`
 - `node_hashes`
@@ -200,7 +196,7 @@ This means feature extraction reuses hashes instead of recomputing them inside t
 
 ## 8. From Rooted Hashes To Final Feature Signatures
 
-Feature generation happens in [_process_node_features(...)](/home/fabrizio/code/NSPPK/src/nsppk.py).
+Feature generation happens in [_process_node_features(...)](../src/nsppk.py).
 
 There are two main feature families.
 
@@ -265,7 +261,7 @@ paired_code = hash_value(raw_signature, nbits=nbits)
 
 ## 9. Final Projection Into Feature Space
 
-The last step is `hash_value(value, nbits)` in [src/hash.py](/home/fabrizio/code/NSPPK/src/hash.py):
+The last step is `hash_value(value, nbits)` in [src/hash.py](../src/hash.py):
 
 ```python
 max_index = 2 ** nbits
@@ -277,6 +273,8 @@ This does two things:
 
 1. reduce the raw signature hash into the target feature-space width `2 ** nbits`
 2. reserve columns `0` and `1`
+
+The encoder accepts `nbits` from 2 through 30. The primitive hash returns 32 bits; final feature projection supports the configured width through 30 bits and reserves columns `0` and `1`.
 
 So final structural feature ids always lie in:
 
@@ -344,6 +342,7 @@ That means:
 
 - different raw signatures can collide after `hash_value(..., nbits)`
 - smaller `nbits` increases collision rate
-- the `raw_signature` values stored by the feature archive in [src/nsppk.py](/home/fabrizio/code/NSPPK/src/nsppk.py) are more informative than the final projected feature ids
+- hashing starts from Python's string representation of each label; use stable, ordinary scalar labels when reproducible hashes across machines or custom label classes matter
+- the `raw_signature` values stored by the feature archive in [src/nsppk.py](../src/nsppk.py) are more informative than the final projected feature ids
 
 If you want to inspect actual provenance for a feature id, use the archive path rather than treating the final projected id as uniquely identifying one structure.
