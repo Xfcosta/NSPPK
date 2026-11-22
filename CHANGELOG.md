@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.5] - 2026-11-22
+
+- Updated the README layout and centered project logo.
+- Added benchmark profiles and results for current graph workloads.
+
 ## [1.3.4] - 2026-11-22
 
 - Regenerated the README and documentation logo PNG from the project SVG source.
