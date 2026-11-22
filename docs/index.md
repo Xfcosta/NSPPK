@@ -1,9 +1,9 @@
 # NSPPK documentation
 
-```{image} _static/nsppk-graph-mark.png
-:alt: NSPPK graph mark: a diamond graph connected to a four-clique
+```{image} ../assets/nsppk.png
+:alt: NSPPK graph logo
 :align: center
-:width: 640px
+:width: 220px
 ```
 
 NSPPK converts labeled NetworkX graphs into fixed-width graph or node feature

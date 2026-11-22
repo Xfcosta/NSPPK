@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.3.3] - 2026-11-22
+
+- Updated the README and documentation landing page to use the project logo asset at a compact size.
+
 ## [1.3.2] - 2026-11-22
 
 - Added the NSPPK graph mark to the README and documentation landing page.

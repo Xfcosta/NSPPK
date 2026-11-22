@@ -39,7 +39,7 @@ from hash import (
 )
 from graph_io import ensure_graph_labels
 
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 
 _make_rng = _graph_io._make_rng
 _require_rdkit = _graph_io._require_rdkit

@@ -26,7 +26,7 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "sphinx_rtd_theme"
 html_title = "NSPPK documentation"
-html_static_path = ["_static"]
+html_static_path = []
 
 myst_heading_anchors = 3
 autodoc_typehints = "description"

@@ -1,7 +1,7 @@
 # NSPPK
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/fabriziocosta/NSPPK/main/docs/_static/nsppk-graph-mark.png" alt="NSPPK graph mark: a diamond graph connected to a four-clique" width="640">
+  <img src="https://raw.githubusercontent.com/fabriziocosta/NSPPK/main/assets/nsppk.png" alt="NSPPK graph logo" width="160">
 </p>
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14261713.svg)](https://doi.org/10.5281/zenodo.14261713)
