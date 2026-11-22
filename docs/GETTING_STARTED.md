@@ -5,18 +5,18 @@ This guide takes you from installation to your first graph feature matrix.
 ## Install NSPPK
 
 NSPPK requires Python 3.10 or newer. Install the current public version from
-GitHub:
+PyPI:
 
 ```bash
-python -m pip install "git+https://github.com/fabriziocosta/NSPPK.git"
+python -m pip install nsppk
 ```
 
 This installs NSPPK and its core dependencies. Optional readers for SMILES or
 SDF files require RDKit; the PyTorch Geometric reader requires PyTorch and
 PyTorch Geometric. See [Graph loading and streaming](IO.md) for those options.
 
-To work on a local checkout instead, install it in editable mode from the
-repository root:
+To develop NSPPK from a local checkout, install it in editable mode with the
+documentation dependencies from the repository root:
 
 ```bash
 python -m pip install -e ".[docs]"

@@ -1,47 +1,27 @@
 # NSPPK
 
-[**Documentation**](https://nsppk.readthedocs.io/en/latest/)
+Neighbourhood Subgraph Pairwise Pathway Kernel (NSPPK) turns labeled NetworkX graphs into fixed-width feature vectors for graph-level prediction, node-level analysis, and scikit-learn workflows.
 
-Neighbourhood Subgraph Pairwise Pathway Kernel (NSPPK) converts labeled NetworkX graphs into fixed-width graph or node feature vectors for use with scikit-learn models.
+[**Read the documentation**](https://nsppk.readthedocs.io/en/latest/) · [Getting started](docs/GETTING_STARTED.md) · [API reference](docs/API.md)
 
 ## Install
 
-Python 3.10 or newer is required. Install the latest published release from
-PyPI:
+NSPPK requires Python 3.10 or newer. Install the latest release from PyPI:
 
 ```bash
 python -m pip install nsppk
 ```
 
-To install a specific release, for example NSPPK 1.3.1:
+## Your first graph features
 
-```bash
-python -m pip install "nsppk==1.3.1"
-```
-
-For local development from a checkout, install in editable mode:
-
-```bash
-python -m pip install -e .
-```
-
-This installs the core dependencies. Optional source readers need extra packages:
-
-- SMILES and SDF: `pip install rdkit`
-- PyTorch Geometric files: install PyTorch for your platform, then `pip install torch_geometric`. See the [PyTorch installation guide](https://pytorch.org/get-started/locally/) and [PyG installation guide](https://pytorch-geometric.readthedocs.io/en/stable/install/installation.html) for compatible platform and accelerator commands.
-
-These optional packages are not installed with NSPPK.
-
-## Quick start
-
-Create simple undirected NetworkX graphs. Node and edge labels are optional; missing labels are treated as `0` during encoding.
+Pass NSPPK a list of simple, undirected `networkx.Graph` objects. Each graph becomes one sample. Node and edge labels can be any hashable values; a missing `label` is treated as `0`.
 
 ```python
 import networkx as nx
-from nsppk import NSPPK, NodeNSPPK
+from nsppk import NSPPK
 
 
-def labeled_graph(node_labels, edges):
+def make_graph(node_labels):
     graph = nx.Graph()
     graph.add_nodes_from(
         (node_id, {"label": label})
@@ -49,52 +29,42 @@ def labeled_graph(node_labels, edges):
     )
     graph.add_edges_from(
         (u, v, {"label": "bond"})
-        for u, v in edges
+        for u, v in [(0, 1), (1, 2)]
     )
     return graph
 
 
 graphs = [
-    labeled_graph(["C", "O", "C"], [(0, 1), (1, 2)]),
-    labeled_graph(["C", "N", "C"], [(0, 1), (1, 2)]),
-    labeled_graph(["O", "C", "O"], [(0, 1), (1, 2)]),
+    make_graph(["C", "O", "C"]),
+    make_graph(["C", "N", "C"]),
+    make_graph(["O", "C", "O"]),
 ]
 
 encoder = NSPPK(nbits=8, dense=False, parallel=False)
 X = encoder.fit_transform(graphs)
-print(X.shape)  # (3, 256)
+print(X.shape)  # (3, 256): one row per graph
 ```
 
-`NSPPK` returns one feature row per graph. With no continuous node attributes and the default graph-level mode, the width is `2 ** nbits`. `dense=False` returns a SciPy sparse matrix; the default `dense=True` returns a NumPy array.
+With `nbits=8` and no continuous node attributes, this example produces 256 structural features per graph. `dense=False` returns a SciPy sparse matrix; the default `dense=True` returns a NumPy array. For the default discrete-label setup, you can also call `encoder.transform(graphs)` directly.
 
-For node-level vectors, use `NodeNSPPK`. Its output is a list with one node-by-feature matrix per input graph:
+## Choose what you need
 
-```python
-node_encoder = NodeNSPPK(nbits=8, dense=False, parallel=False)
-node_features = node_encoder.fit_transform(graphs)
-print(node_features[0].shape)  # (number of nodes in graphs[0], 256)
-```
+- **Graph features:** `NSPPK` returns one feature row per graph, as shown above.
+- **Node features:** `NodeNSPPK` returns one node-by-feature matrix per graph. Rows follow each graph’s `graph.nodes()` iteration order.
+- **Prediction:** `NSPPKClassifier` and `NSPPKRegressor` wrap graph vectorization with a scikit-learn estimator.
 
-Rows follow each graph’s `graph.nodes()` iteration order. See the [API reference](docs/API.md) for graph requirements, parameter meanings, and output shapes.
+See the [getting-started guide](docs/GETTING_STARTED.md) for runnable examples of node features and prediction, and the [API reference](docs/API.md) for parameters and output details.
 
-For supervised learning directly from graph lists, use `NSPPKClassifier` or `NSPPKRegressor`. Both accept any compatible scikit-learn estimator, with `"linear"` and `"rf"` shortcuts:
+## Read graphs from files
 
-```python
-from nsppk import NSPPKClassifier
+The core install supports NetworkX graphs. Optional input formats require extra dependencies:
 
-classifier = NSPPKClassifier(
-    estimator="linear",
-    estimator_params={"C": 0.5},
-    nbits=14,
-    parallel=False,
-)
-classifier.fit(train_graphs, y_train)
-predictions = classifier.predict(test_graphs)
-```
+- SMILES and SDF: `python -m pip install rdkit`
+- PyTorch Geometric files: install PyTorch for your platform, then `python -m pip install torch_geometric`. See the [PyTorch installation guide](https://pytorch.org/get-started/locally/) and [PyG installation guide](https://pytorch-geometric.readthedocs.io/en/stable/install/installation.html) for compatible platform and accelerator commands.
 
-The `"linear"` shortcut uses logistic regression for classification and Ridge regression for regression. The `"rf"` shortcut uses the corresponding random forest. See the [API reference](docs/API.md) for custom estimators and parameter options.
+See [graph loading and streaming](docs/IO.md) for supported formats and examples. These optional packages are not installed with NSPPK.
 
-## Documentation
+## Documentation and examples
 
 - [Getting started](docs/GETTING_STARTED.md)
 - [API and output reference](docs/API.md)
@@ -105,17 +75,15 @@ The `"linear"` shortcut uses logistic regression for classification and Ridge re
 - [Development and releases](docs/DEVELOPMENT.md)
 - [Changelog](CHANGELOG.md)
 
-## Examples
+Runnable notebooks are in `notebooks/`: `Demo.ipynb` covers graph features, `Importance Demo.ipynb` covers explanations, and `Streaming Benchmark.ipynb` covers loading and streaming. Other notebooks benchmark molecular graphs and supervised learning; some require optional packages. See [IO.md](docs/IO.md) for reader requirements.
 
-Runnable notebooks are in `notebooks/`:
+## Develop from a checkout
 
-- `Demo.ipynb`: graph-level feature extraction
-- `Importance Demo.ipynb`: node and edge importance on a synthetic dataset
-- `Streaming Benchmark.ipynb`: loading and streaming examples
-- `Molecular Graph Learning Curve.ipynb`, `Molecular Graph nbits Benchmark.ipynb`, and `Molecular Graph Speed Benchmark.ipynb`: molecular graph experiments
-- `NSPPK Classifier Benchmark.ipynb`: compare the `linear` and `rf` supervised estimator shortcuts on HIV
+From the repository root, install NSPPK in editable mode:
 
-Some notebooks require optional chemistry or machine-learning packages beyond NSPPK’s core dependencies. The graph readers and their optional requirements are documented in [IO.md](docs/IO.md).
+```bash
+python -m pip install -e ".[docs]"
+```
 
 ## Citation
 
