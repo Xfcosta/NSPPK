@@ -1,5 +1,7 @@
 # NSPPK
 
+[**Documentation**](https://nsppk.readthedocs.io/en/latest/)
+
 Neighbourhood Subgraph Pairwise Pathway Kernel (NSPPK) converts labeled NetworkX graphs into fixed-width graph or node feature vectors for use with scikit-learn models.
 
 ## Install
