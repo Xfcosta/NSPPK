@@ -22,9 +22,9 @@ For details on directed and multigraph hashing and edge rows, see [Edge attribut
 
 | Parameter | Default | Meaning |
 | --- | ---: | --- |
-| `radius` | `1` | Maximum rooted neighborhood radius. Must be a non-negative integer. |
-| `distance` | `3` | Maximum shortest-path distance between paired roots. Must be a non-negative integer. |
-| `connector` | `0` | Connector thickness used to summarize shortest-path unions; `0` disables connector summaries. Must be a non-negative integer. |
+| `radius` | `1` | Rooted neighborhood radii. Scalar `n` selects `0..n`; tuple `(min, max)` selects that inclusive range. |
+| `distance` | `3` | Shortest-path distances between roots. Scalar `n` selects `0..n`; tuple `(min, max)` selects that inclusive range. |
+| `connector` | `0` | Connector thicknesses for shortest-path unions. Scalar `n` selects `0..n`; tuple `(min, max)` selects that inclusive range. Connector `0` disables connector summaries. |
 | `nbits` | `10` | Hashed structural width is `2 ** nbits`. Accepted range is 2 through 30. |
 | `degree_threshold` | `None` | For nodes above this degree, restrict rooted expansion to radius zero. Must be `None` or a non-negative integer. |
 | `dense` | `True` | Return a dense NumPy array when true; return a SciPy CSR matrix when false. |
@@ -42,6 +42,12 @@ For details on directed and multigraph hashing and edge rows, see [Edge attribut
 | `simplex_feature_max_order` | `2` | Maximum simplex dimension, inclusive: 0=nodes, 1=edges, 2=triangles, 3=tetrahedra. Must be a non-negative integer. |
 
 The constructor also accepts the aliases `r`, `d`, and `c` for `radius`, `distance`, and `connector`. Prefer the long names.
+
+For example, `radius=(2, 2)` uses only radius 2, while `radius=2` retains the cumulative radii 0, 1, and 2. The same convention applies to `distance` and `connector`.
+
+When `use_simplex_features=True` and distance 0 is selected, the same root supplies both endpoints. Its simplex fragments are enumerated once per selected root radius and encoded as unary neighborhood features. The raw signature includes the sorted endpoint node-label hashes (which are identical at distance 0), the selected radius, the simplex order, and the simplex fragment hash. This avoids constructing fragment pairs for the root with itself.
+
+Simplex clique enumeration uses a bitset implementation through dimension 3 and falls back to NetworkX's all-clique enumerator for higher dimensions.
 
 ### `NSPPKClassifier` and `NSPPKRegressor`
 

@@ -47,7 +47,7 @@ from hash import (
 )
 from graph_io import ensure_graph_labels
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 _make_rng = _graph_io._make_rng
 _require_rdkit = _graph_io._require_rdkit
@@ -73,17 +73,43 @@ def _resolve_alias(primary_name, primary_value, alias_name, alias_value, default
     return alias_value
 
 
+def _inclusive_parameter_bounds(value, name):
+    """Normalize a cutoff or inclusive (min, max) range to integer bounds."""
+    if isinstance(value, Integral) and not isinstance(value, bool):
+        if value < 0:
+            raise ValueError(f"{name} must be non-negative.")
+        return 0, int(value)
+    if isinstance(value, tuple) and len(value) == 2:
+        lower, upper = value
+        if any(isinstance(item, bool) or not isinstance(item, Integral) for item in value):
+            raise ValueError(f"{name} range endpoints must be non-negative integers.")
+        if lower < 0 or upper < 0 or lower > upper:
+            raise ValueError(f"{name} range must satisfy 0 <= min <= max.")
+        return int(lower), int(upper)
+    raise ValueError(
+        f"{name} must be a non-negative integer cutoff or an inclusive (min, max) tuple."
+    )
+
+
+def _inclusive_parameter_values(value, name):
+    lower, upper = _inclusive_parameter_bounds(value, name)
+    return range(lower, upper + 1)
+
+
 def _validate_encoder_parameters(
     *, radius, distance, connector, nbits, degree_threshold, dense, parallel,
     node_attribute_key, edge_attribute_key, attribute_dim, attribute_alphabet_size,
     edge_attribute_dim, edge_attribute_alphabet_size, sigma, use_node_kernel,
     use_simplex_features, simplex_feature_max_order=2,
 ):
-    integer_parameters = {"radius": radius, "distance": distance, "connector": connector}
-    integer_parameters["simplex_feature_max_order"] = simplex_feature_max_order
-    for name, value in integer_parameters.items():
-        if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
-            raise ValueError(f"{name} must be a non-negative integer.")
+    for name, value in (("radius", radius), ("distance", distance), ("connector", connector)):
+        _inclusive_parameter_bounds(value, name)
+    if (
+        isinstance(simplex_feature_max_order, bool)
+        or not isinstance(simplex_feature_max_order, Integral)
+        or simplex_feature_max_order < 0
+    ):
+        raise ValueError("simplex_feature_max_order must be a non-negative integer.")
 
     if isinstance(nbits, bool) or not isinstance(nbits, Integral) or not 2 <= nbits <= 30:
         raise ValueError("nbits must be an integer between 2 and 30.")
@@ -636,10 +662,9 @@ def _simplex_fragments(graph, source_node_ids, max_order):
     simple_region = nx.Graph(traversal_graph.subgraph(source_node_ids))
     simple_region.remove_edges_from(nx.selfloop_edges(simple_region))
     fragments = []
-    for clique in nx.enumerate_all_cliques(simple_region):
+    node_order = graph.graph['_structural_cache']['node_order']
+    for clique in _bounded_cliques(simple_region, max_order, node_order):
         order = len(clique) - 1
-        if order > max_order:
-            break
         fragments.append((order, _simplex_fragment_hash(graph, clique), tuple(clique)))
 
     fragments = tuple(fragments)
@@ -657,6 +682,49 @@ def _simplex_fragment_edge_ids(graph, simplex_nodes):
         for right in simplex_nodes[index + 1:]
         for edge_id in edge_ids_by_pair.get(frozenset((left, right)), ())
     }
+
+
+_FAST_CLIQUE_MAX_SIMPLEX_DIMENSION = 3
+
+
+def _bounded_cliques(graph, max_simplex_dimension, node_order):
+    """Enumerate bounded cliques with bitset intersections for dimensions <= 3."""
+    max_size = max_simplex_dimension + 1
+    if max_simplex_dimension > _FAST_CLIQUE_MAX_SIMPLEX_DIMENSION:
+        for clique in nx.enumerate_all_cliques(graph):
+            if len(clique) > max_size:
+                break
+            yield tuple(sorted(clique, key=node_order.__getitem__))
+        return
+
+    ordered_nodes = sorted(graph.nodes(), key=node_order.__getitem__)
+    node_index = {node: index for index, node in enumerate(ordered_nodes)}
+    higher_neighbor_masks = []
+    for index, node in enumerate(ordered_nodes):
+        mask = 0
+        for neighbor in graph.neighbors(node):
+            neighbor_index = node_index[neighbor]
+            if neighbor_index > index:
+                mask |= 1 << neighbor_index
+        higher_neighbor_masks.append(mask)
+
+    def extend(prefix, candidates):
+        while candidates:
+            bit = candidates & -candidates
+            candidates ^= bit
+            index = bit.bit_length() - 1
+            clique = prefix + (ordered_nodes[index],)
+            yield clique
+            if len(clique) < max_size:
+                yield from extend(
+                    clique,
+                    candidates & higher_neighbor_masks[index],
+                )
+
+    for index, node in enumerate(ordered_nodes):
+        yield (node,)
+        if max_size > 1:
+            yield from extend((node,), higher_neighbor_masks[index])
 
 
 def _expanded_path_union_nodes(graph, union_of_shortest_paths, connect):
@@ -816,8 +884,11 @@ def _prepare_structural_graph(
     graph.graph['_hash_strategy'] = strategy
     traversal_graph = strategy.traversal_graph(graph)
     graph.graph['_traversal_graph'] = traversal_graph
-    cutoff = max(radius, connector)
-    bfs_cutoff = max(radius, connector, distance)
+    _, radius_max = _inclusive_parameter_bounds(radius, "radius")
+    _, distance_max = _inclusive_parameter_bounds(distance, "distance")
+    _, connector_max = _inclusive_parameter_bounds(connector, "connector")
+    cutoff = max(radius_max, connector_max)
+    bfs_cutoff = max(radius_max, connector_max, distance_max)
     graph.graph['_bfs_cache'] = _build_bfs_cache(traversal_graph, bfs_cutoff)
     graph.graph['_structural_cache'] = _build_structural_cache(graph, strategy)
     structural_cache = graph.graph['_structural_cache']
@@ -895,7 +966,7 @@ def _connector_provenance(
 
 
 def _process_node_features(
-    node_idx, graph, distance, connector, nbits, sigma, accumulator,
+    node_idx, graph, radius, distance, connector, nbits, sigma, accumulator,
     use_simplex_features=False, simplex_feature_max_order=2,
     archive_collector=None,
 ):
@@ -905,28 +976,39 @@ def _process_node_features(
     neighbors_by_node = structural_cache.get('neighbors', {})
     node_order = structural_cache.get('node_order')
     rooted_graph_hashes_by_node = structural_cache.get('rooted_graph_hashes', {})
+    radius_values = _inclusive_parameter_values(radius, "radius")
+    distance_min, distance_max = _inclusive_parameter_bounds(distance, "distance")
+    connector_values = _inclusive_parameter_values(connector, "connector")
+    positive_connector_values = tuple(value for value in connector_values if value > 0)
     node_bfs_cache = graph.graph.get('_bfs_cache', {}).get(node_idx)
     if node_bfs_cache is not None:
         node_idxs_to_dist_dict = {
             curr_node_idx: dist
             for curr_node_idx, dist in node_bfs_cache['node_idxs_to_dist_dict'].items()
-            if dist <= distance
+            if dist <= distance_max
         }
         dist_to_node_idxs_dict = {
             dist: node_idxs
             for dist, node_idxs in node_bfs_cache['dist_to_node_idxs_dict'].items()
-            if dist <= distance
+            if distance_min <= dist <= distance_max
         }
     else:
-        node_idxs_to_dist_dict = nx.single_source_shortest_path_length(graph, node_idx, cutoff=distance)
-        dist_to_node_idxs_dict = invert_dict(node_idxs_to_dist_dict)
+        node_idxs_to_dist_dict = nx.single_source_shortest_path_length(
+            graph, node_idx, cutoff=distance_max
+        )
+        selected_distances = {
+            target: dist for target, dist in node_idxs_to_dist_dict.items()
+            if distance_min <= dist <= distance_max
+        }
+        dist_to_node_idxs_dict = invert_dict(selected_distances)
 
     connector_data_by_target = {}
-    for radius_i, code_i in enumerate(rooted_graph_hashes_by_node[node_idx]):
+    for radius_i in radius_values:
+        code_i = rooted_graph_hashes_by_node[node_idx][radius_i]
         for dist, node_idxs in sorted(dist_to_node_idxs_dict.items()):
             w = gaussian_weight(dist, sigma)
             for curr_node_idx in node_idxs:
-                if connector > 0:
+                if positive_connector_values:
                     target_connector_data = connector_data_by_target.get(curr_node_idx)
                     if target_connector_data is None:
                         union_of_shortest_paths, union_path_edges = _shortest_path_edge_union(
@@ -944,7 +1026,7 @@ def _process_node_features(
                                 connect_depth,
                                 include_occurrence_provenance=archive_collector is not None,
                             )
-                            for connect_depth in range(1, connector + 1)
+                            for connect_depth in positive_connector_values
                         }
                         target_connector_data = (
                             union_of_shortest_paths,
@@ -959,10 +1041,11 @@ def _process_node_features(
                     structural_cache['node_label_hashes'][node_idx],
                     structural_cache['node_label_hashes'][curr_node_idx],
                 )))
-                for connect in range(connector + 1):
+                for connect in connector_values:
                     if (
                         use_simplex_features
                         and connect > 0
+                        and dist > 0
                         and radius_i == 0
                     ):
                         union_nodes = _expanded_path_union_nodes(
@@ -992,8 +1075,33 @@ def _process_node_features(
                                     source_edge_ids=source_edge_ids,
                                 )
 
-                    for radius_j, code_j in enumerate(rooted_graph_hashes_by_node[curr_node_idx]):
-                        if use_simplex_features and connect == 0:
+                    if use_simplex_features and connect == 0 and dist == 0:
+                        single_region = _node_ball(graph, node_idx, radius_i)
+                        for simplex_order, simplex_hash, simplex_nodes in _simplex_fragments(
+                            graph, single_region, simplex_feature_max_order
+                        ):
+                            raw_simplex_signature = hash_sequence((
+                                'simplex-neighborhood-single', dist,
+                                root_label_pair,
+                                radius_i, simplex_order, simplex_hash,
+                            ))
+                            feature_code = hash_value(raw_simplex_signature, nbits=nbits)
+                            accumulator.add(feature_code, w)
+                            if archive_collector is not None:
+                                source_node_ids = set(simplex_nodes)
+                                archive_collector.add(
+                                    feature_id=feature_code,
+                                    raw_signature=raw_simplex_signature,
+                                    feature_kind='simplex_neighborhood_single',
+                                    root_node=node_idx,
+                                    target_node=curr_node_idx,
+                                    source_node_ids=source_node_ids,
+                                    source_edge_ids=_simplex_fragment_edge_ids(graph, source_node_ids),
+                                )
+
+                    for radius_j in radius_values:
+                        code_j = rooted_graph_hashes_by_node[curr_node_idx][radius_j]
+                        if use_simplex_features and connect == 0 and dist > 0:
                             first_region = _node_ball(graph, node_idx, radius_i)
                             second_region = _node_ball(graph, curr_node_idx, radius_j)
                             first_fragments = _simplex_fragments(
@@ -1088,7 +1196,7 @@ def get_structural_node_vectors(
             accumulator = ListAccumulator()
             if selected_roots is None or node_idx in selected_roots:
                 _process_node_features(
-                    node_idx, graph, distance, connector, nbits, sigma, accumulator,
+                    node_idx, graph, radius, distance, connector, nbits, sigma, accumulator,
                     use_simplex_features, simplex_feature_max_order,
                 )
             row_entries = Counter(accumulator.get())
@@ -1100,7 +1208,7 @@ def get_structural_node_vectors(
             accumulator = DictAccumulator()
             if selected_roots is None or node_idx in selected_roots:
                 _process_node_features(
-                    node_idx, graph, distance, connector, nbits, sigma, accumulator,
+                    node_idx, graph, radius, distance, connector, nbits, sigma, accumulator,
                     use_simplex_features, simplex_feature_max_order,
                 )
             row_entries = dict(accumulator.get())
@@ -1133,6 +1241,7 @@ def get_feature_archive(
         _process_node_features(
             node_idx,
             graph,
+            radius,
             distance,
             connector,
             nbits,
@@ -1220,9 +1329,9 @@ def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_
 
     Args:
         original_graph (networkx.Graph): The input graph.
-        radius (int): The radius for rooted graph hashing.
-        distance (int): The distance parameter for paired hashing.
-        connector (int): Connector thickness.
+        radius (int or tuple[int, int]): Scalar n selects radii 0..n; a tuple selects inclusive min..max.
+        distance (int or tuple[int, int]): Scalar n selects distances 0..n; a tuple selects inclusive min..max.
+        connector (int or tuple[int, int]): Scalar n selects connectors 0..n; a tuple selects inclusive min..max.
         nbits (int): Number of bits for hashing.
         weight_key (str, optional): Node weight key for reweighting features.
         node_attribute_key (str, optional): Node attribute key for additional features.
@@ -1333,9 +1442,9 @@ def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, w
 
     Args:
         original_graph (networkx.Graph): The input graph.
-        radius (int): The radius for rooted graph hashing.
-        distance (int): The distance parameter for paired hashing.
-        connector (int): Connector thickness.
+        radius (int or tuple[int, int]): Scalar n selects radii 0..n; a tuple selects inclusive min..max.
+        distance (int or tuple[int, int]): Scalar n selects distances 0..n; a tuple selects inclusive min..max.
+        connector (int or tuple[int, int]): Scalar n selects connectors 0..n; a tuple selects inclusive min..max.
         nbits (int): Number of bits for hashing.
         weight_key (str, optional): Node weight key for reweighting features.
         node_attribute_key (str, optional): Node attribute key for additional features.
@@ -1386,9 +1495,9 @@ def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_
 
     Args:
         original_graph (networkx.Graph): The input graph.
-        radius (int): The radius for rooted graph hashing.
-        distance (int): The distance parameter for paired hashing.
-        connector (int): Connector thickness.
+        radius (int or tuple[int, int]): Scalar n selects radii 0..n; a tuple selects inclusive min..max.
+        distance (int or tuple[int, int]): Scalar n selects distances 0..n; a tuple selects inclusive min..max.
+        connector (int or tuple[int, int]): Scalar n selects connectors 0..n; a tuple selects inclusive min..max.
         nbits (int): Number of bits for hashing.
         weight_key (str, optional): Node weight key for reweighting features.
         node_attribute_key (str, optional): Node attribute key for additional features.
@@ -1447,9 +1556,9 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
 
     Args:
         graphs (list of networkx.Graph): The list of graphs to encode.
-        radius (int): The radius for rooted graph hashing.
-        distance (int): The distance parameter for paired hashing.
-        connector (int): Connector thickness.
+        radius (int or tuple[int, int]): Scalar n selects radii 0..n; a tuple selects inclusive min..max.
+        distance (int or tuple[int, int]): Scalar n selects distances 0..n; a tuple selects inclusive min..max.
+        connector (int or tuple[int, int]): Scalar n selects connectors 0..n; a tuple selects inclusive min..max.
         nbits (int): Number of bits for hashing.
         parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
         weight_key (str, optional): Node weight key for reweighting features.
@@ -1500,9 +1609,9 @@ def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits
 
     Args:
         graphs (list of networkx.Graph): The list of graphs to encode.
-        radius (int): The radius for rooted graph hashing.
-        distance (int): The distance parameter for paired hashing.
-        connector (int): Connector thickness.
+        radius (int or tuple[int, int]): Scalar n selects radii 0..n; a tuple selects inclusive min..max.
+        distance (int or tuple[int, int]): Scalar n selects distances 0..n; a tuple selects inclusive min..max.
+        connector (int or tuple[int, int]): Scalar n selects connectors 0..n; a tuple selects inclusive min..max.
         nbits (int): Number of bits for hashing.
         parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
         weight_key (str, optional): Node weight key for reweighting features.
@@ -1543,9 +1652,9 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
 
     Args:
         graphs (list of networkx.Graph): The list of graphs to encode.
-        radius (int): The radius for rooted graph hashing.
-        distance (int): The distance parameter for paired hashing.
-        connector (int): Connector thickness.
+        radius (int or tuple[int, int]): Scalar n selects radii 0..n; a tuple selects inclusive min..max.
+        distance (int or tuple[int, int]): Scalar n selects distances 0..n; a tuple selects inclusive min..max.
+        connector (int or tuple[int, int]): Scalar n selects connectors 0..n; a tuple selects inclusive min..max.
         nbits (int): Number of bits for hashing.
         parallel (bool, optional): Whether to encode graphs in parallel. Defaults to True.
         weight_key (str, optional): Node weight key for reweighting features.
@@ -1625,9 +1734,9 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
         embedder (transformer, optional): A transformer for attribute embedding (e.g., TruncatedSVD).
         clustering_predictor (estimator, optional): A clustering model for attribute clustering (e.g., KMeans).
         classifier (estimator, optional): A classifier for predicting cluster labels (e.g., ExtraTreesClassifier).
-        radius (int, default=1): The radius for rooted graph hashing.
-        distance (int, default=3): The distance parameter for paired hashing.
-        connector (int, default=0): Connector thickness.
+        radius (int or tuple[int, int], default=1): Scalar n selects radii 0..n; a tuple selects inclusive min..max.
+        distance (int or tuple[int, int], default=3): Scalar n selects distances 0..n; a tuple selects inclusive min..max.
+        connector (int or tuple[int, int], default=0): Scalar n selects connectors 0..n; a tuple selects inclusive min..max.
         nbits (int, default=10): Number of bits for hashing.
         degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
         dense (bool, default=True): Whether to convert the feature matrix to a dense format.
@@ -1947,9 +2056,9 @@ class NSPPK(BaseEstimator, TransformerMixin):
     ExtraTreesClassifier for classification.
 
     Parameters:
-        radius (int, default=1): The radius for rooted graph hashing.
-        distance (int, default=3): The distance parameter for paired hashing.
-        connector (int, default=0): Connector thickness.
+        radius (int or tuple[int, int], default=1): Scalar n selects radii 0..n; a tuple selects inclusive min..max.
+        distance (int or tuple[int, int], default=3): Scalar n selects distances 0..n; a tuple selects inclusive min..max.
+        connector (int or tuple[int, int], default=0): Scalar n selects connectors 0..n; a tuple selects inclusive min..max.
         nbits (int, default=10): Number of bits for hashing.
         degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
         dense (bool, default=True): Whether to convert the feature matrix to a dense format.
@@ -2578,9 +2687,9 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
     of node attributes using Singular Value Decomposition (SVD).
 
     Parameters:
-        radius (int, default=1): The radius for rooted graph hashing.
-        distance (int, default=3): The distance parameter for paired hashing.
-        connector (int, default=0): Connector thickness.
+        radius (int or tuple[int, int], default=1): Scalar n selects radii 0..n; a tuple selects inclusive min..max.
+        distance (int or tuple[int, int], default=3): Scalar n selects distances 0..n; a tuple selects inclusive min..max.
+        connector (int or tuple[int, int], default=0): Scalar n selects connectors 0..n; a tuple selects inclusive min..max.
         nbits (int, default=10): Number of bits for hashing.
         degree_threshold (int, optional): Threshold for node degree to limit hashing. Defaults to None.
         dense (bool, default=True): Whether to convert the feature matrix to a dense format.

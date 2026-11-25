@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0] - 2026-11-25
+
+- Added inclusive `(min, max)` tuple ranges for `radius`, `distance`, and `connector`, while preserving scalar cumulative ranges from zero.
+- Optimized distance-zero simplex features by enumerating fragments once as unary neighborhood features instead of forming self-pairs.
+- Added bitset-based clique enumeration through simplex dimension 3, with NetworkX fallback for higher dimensions.
+- Documented tuple ranges, distance-zero simplex signatures, and clique enumeration behavior.
+
 ## [3.1.0] - 2026-11-25
 
 - Added optional per-graph root-node filtering to graph-level and node-level NSPPK transforms.

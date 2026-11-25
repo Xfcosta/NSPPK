@@ -313,6 +313,21 @@ raw_signature = hash_sequence([
 
 For a simplex neighborhood-pair feature, the raw signature contains a source tag, root distance, unordered root-label pair, and unordered pair of `(simplex_order, fragment_hash)` values. A path-union simplex feature contains a source tag, root distance, unordered root-label pair, simplex order, and fragment hash.
 
+When the root distance is zero, endpoint neighborhoods are the same region, so NSPPK emits each simplex fragment once as a unary feature rather than pairing it with itself:
+
+```python
+raw_signature = hash_sequence([
+    "simplex-neighborhood-single",
+    0,
+    (root_label_hash, root_label_hash),
+    radius,
+    simplex_order,
+    fragment_hash,
+])
+```
+
+The radius selects the neighborhood used to enumerate fragments. The repeated root-label hash preserves the same endpoint-label conditioning used by distance-positive simplex features.
+
 ## 11. Invariance Properties
 
 The implementation gets its invariances from the choice between `hash_set(...)` and `hash_sequence(...)`.
