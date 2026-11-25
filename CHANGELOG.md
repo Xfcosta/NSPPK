@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.1.0] - 2026-11-25
+
+- Added support for directed graphs and multigraphs, preserving edge direction, parallel edges, and self-loops in structural features and archives.
+- Added a runnable notebook comparing multigraph, directed, and undirected graph vectorizations.
+- Documented directed and multigraph semantics across the API and hashing guides.
+
 ## [2.0.0] - 2026-11-22
 
 - Added `EdgeNSPPK`, which returns one structural feature row per edge by summing the endpoint node rows.

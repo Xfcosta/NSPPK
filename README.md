@@ -22,7 +22,7 @@ python -m pip install nsppk
 
 ## Your first graph features
 
-Pass NSPPK a list of simple, undirected `networkx.Graph` objects. Each graph becomes one sample. Node and edge labels can be any hashable values; a missing `label` is treated as `0`.
+Pass NSPPK a list of NetworkX `Graph`, `DiGraph`, `MultiGraph`, or `MultiDiGraph` objects. Each graph becomes one sample. For directed inputs, distances and neighborhoods use the undirected projection while hashes retain arc direction. Parallel edges and self-loops contribute individually. Node and edge labels can be any hashable values; a missing `label` is treated as `0`.
 
 ```python
 import networkx as nx
@@ -59,7 +59,7 @@ With `nbits=8` and no continuous node attributes, this example produces 256 stru
 
 - **Graph features:** `NSPPK` returns one feature row per graph, as shown above.
 - **Node features:** `NodeNSPPK` returns one node-by-feature matrix per graph. Rows follow each graph’s `graph.nodes()` iteration order.
-- **Edge features:** `EdgeNSPPK` returns one edge-by-feature matrix per graph. Rows follow each graph’s `graph.edges()` iteration order; each edge’s structural row sums the feature rows of its two endpoints.
+- **Edge features:** `EdgeNSPPK` returns one edge-by-feature matrix per graph. Rows follow NetworkX edge iteration order; multigraph rows retain each keyed edge, and directed rows include the ordered arc pattern.
 - **Prediction:** `NSPPKClassifier` and `NSPPKRegressor` wrap graph vectorization with a scikit-learn estimator.
 
 See the [getting-started guide](docs/GETTING_STARTED.md) for runnable examples of node features and prediction, and the [API reference](docs/API.md) for parameters and output details.
@@ -84,7 +84,7 @@ See [graph loading and streaming](docs/IO.md) for supported formats and examples
 - [Development and releases](docs/DEVELOPMENT.md)
 - [Changelog](CHANGELOG.md)
 
-Runnable notebooks are in `notebooks/`: `Demo.ipynb` covers graph features, `Importance Demo.ipynb` covers explanations, and `Streaming Benchmark.ipynb` covers loading and streaming. Other notebooks benchmark molecular graphs and supervised learning; some require optional packages. See [IO.md](docs/IO.md) for reader requirements.
+Runnable notebooks are in `notebooks/`: `Demo.ipynb` covers graph features, `Graph Types Vectorization Demo.ipynb` compares multigraph, directed, and undirected inputs, `Importance Demo.ipynb` covers explanations, and `Streaming Benchmark.ipynb` covers loading and streaming. Other notebooks benchmark molecular graphs and supervised learning; some require optional packages. See [IO.md](docs/IO.md) for reader requirements.
 
 ## Develop from a checkout
 

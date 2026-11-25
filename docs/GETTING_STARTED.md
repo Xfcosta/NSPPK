@@ -24,9 +24,12 @@ python -m pip install -e ".[docs]"
 
 ## Encode a few graphs
 
-Each input graph is one sample. NSPPK expects simple undirected
-`networkx.Graph` objects. Node and edge labels can be any hashable values; if a
-label is missing, NSPPK treats it as `0` during encoding.
+Each input graph is one sample. NSPPK supports NetworkX `Graph`, `DiGraph`,
+`MultiGraph`, and `MultiDiGraph` objects. Directed inputs use undirected
+connectivity for distances and neighborhoods while retaining arc direction in
+hashes. Parallel edges contribute individually. Node and edge labels can be
+any hashable values; if a label is missing, NSPPK treats it as `0` during
+encoding.
 
 ```python
 import networkx as nx

@@ -21,8 +21,11 @@ def ensure_graph_labels(graph, default_label=0):
     """
     for node_idx in graph.nodes():
         graph.nodes[node_idx].setdefault("label", default_label)
-    for u, v in graph.edges():
-        graph.edges[u, v].setdefault("label", default_label)
+    edge_records = graph.edges(keys=True) if graph.is_multigraph() else graph.edges()
+    for edge in edge_records:
+        u, v = edge[:2]
+        data = graph.edges[u, v, edge[2]] if graph.is_multigraph() else graph.edges[u, v]
+        data.setdefault("label", default_label)
     return graph
 
 

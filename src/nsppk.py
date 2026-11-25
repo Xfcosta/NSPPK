@@ -39,7 +39,7 @@ from hash import (
 )
 from graph_io import ensure_graph_labels
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 _make_rng = _graph_io._make_rng
 _require_rdkit = _graph_io._require_rdkit
@@ -213,13 +213,59 @@ def _edge_key(u, v):
     return tuple(sorted((u, v)))
 
 
+def _edge_id(graph, u, v, key=None):
+    if graph.is_directed():
+        return (u, v, key) if graph.is_multigraph() else (u, v)
+    try:
+        endpoints = _edge_key(u, v)
+    except TypeError:
+        node_order = {node: idx for idx, node in enumerate(graph.nodes())}
+        endpoints = (u, v) if node_order[u] <= node_order[v] else (v, u)
+    return endpoints + (key,) if graph.is_multigraph() else endpoints
+
+
+def _edge_records(graph):
+    if graph.is_multigraph():
+        for u, v, key, data in graph.edges(keys=True, data=True):
+            yield u, v, key, data
+    else:
+        for u, v, data in graph.edges(data=True):
+            yield u, v, None, data
+
+
+def _undirected_pair_key(u, v):
+    return frozenset((u, v))
+
+
+def _incident_edge_records(graph, node):
+    if graph.is_directed():
+        if graph.is_multigraph():
+            records = list(graph.out_edges(node, keys=True, data=True))
+            incoming = graph.in_edges(node, keys=True, data=True)
+        else:
+            records = list(graph.out_edges(node, data=True))
+            incoming = graph.in_edges(node, data=True)
+        records.extend(edge for edge in incoming if edge[0] != edge[1])
+    else:
+        records = list(graph.edges(node, keys=True, data=True)) if graph.is_multigraph() else list(graph.edges(node, data=True))
+    for edge in records:
+        if graph.is_multigraph():
+            u, v, key, data = edge
+        else:
+            u, v, data = edge
+            key = None
+        other = v if u == node else u
+        yield other, key, data, u, v
+
+
 def _node_ball(graph, center, radius):
     if radius < 0:
         return set()
     bfs_cache = graph.graph.get('_bfs_cache')
     if bfs_cache is not None:
         return set(bfs_cache[center]['balls_by_radius'][radius])
-    return set(nx.single_source_shortest_path_length(graph, center, cutoff=radius).keys())
+    traversal_graph = graph.graph.get('_traversal_graph', graph)
+    return set(nx.single_source_shortest_path_length(traversal_graph, center, cutoff=radius).keys())
 
 
 def _build_bfs_cache(graph, max_radius):
@@ -262,12 +308,15 @@ def _build_structural_cache(graph):
         'node_hashes': {},
         'edge_triplet_hashes': {},
         'rooted_graph_hashes': {},
+        'edge_ids_by_pair': defaultdict(list),
     }
     for node_order, node_idx in enumerate(graph.nodes()):
-        neighbors = tuple(graph.neighbors(node_idx))
+        neighbors = tuple(graph.graph['_traversal_graph'].neighbors(node_idx))
         cache['neighbors'][node_idx] = neighbors
         cache['degrees'][node_idx] = len(neighbors)
         cache['node_order'][node_idx] = node_order
+    for u, v, key, _ in _edge_records(graph):
+        cache['edge_ids_by_pair'][_undirected_pair_key(u, v)].append(_edge_id(graph, u, v, key))
     return cache
 
 
@@ -278,6 +327,26 @@ def _induced_edge_ids(source_node_ids, neighbors_by_node, node_order=None):
             if v in source_node_ids and (node_order is None or node_order[u] < node_order[v]):
                 source_edge_ids.add(_edge_key(u, v))
     return source_edge_ids
+
+
+def _induced_edge_ids_from_graph(graph, source_node_ids):
+    source_node_ids = set(source_node_ids)
+    return {
+        _edge_id(graph, u, v, key)
+        for u, v, key, _ in _edge_records(graph)
+        if u in source_node_ids and v in source_node_ids
+    }
+
+
+def _edge_ids_between(graph, u, v):
+    edge_ids_by_pair = graph.graph.get('_structural_cache', {}).get('edge_ids_by_pair')
+    if edge_ids_by_pair is not None:
+        return edge_ids_by_pair.get(_undirected_pair_key(u, v), ())
+    return tuple(
+        _edge_id(graph, edge_u, edge_v, key)
+        for edge_u, edge_v, key, _ in _edge_records(graph)
+        if _undirected_pair_key(edge_u, edge_v) == _undirected_pair_key(u, v)
+    )
 
 
 def _shortest_path_edge_union(graph, source, target, include_edges=True):
@@ -309,20 +378,22 @@ def _shortest_path_edge_union(graph, source, target, include_edges=True):
             nodes.add(node)
             for predecessor in predecessors.get(node, []):
                 if include_edges:
-                    edges.add(_edge_key(predecessor, node))
+                    edges.update(_edge_ids_between(graph, predecessor, node))
                 stack.append(predecessor)
 
         result = (nodes, edges)
         source_cache['shortest_path_union_cache'][target] = result
         return result if include_edges else (nodes, set())
 
-    shortest_paths = list(nx.all_shortest_paths(graph, source=source, target=target))
+    traversal_graph = graph.graph.get('_traversal_graph', graph)
+    shortest_paths = list(nx.all_shortest_paths(traversal_graph, source=source, target=target))
     nodes = set()
     edges = set()
     for path in shortest_paths:
         nodes.update(path)
         if include_edges:
-            edges.update(_edge_key(u, v) for u, v in zip(path, path[1:]))
+            for first, second in zip(path, path[1:]):
+                edges.update(_edge_ids_between(graph, first, second))
     return nodes, edges
 
 
@@ -330,13 +401,23 @@ def _induced_subgraph_from_occurrence(original_graph, occurrence):
     subgraph = original_graph.__class__()
     for key, value in original_graph.graph.items():
         subgraph.graph[key] = copy.deepcopy(value)
-    for node in sorted(occurrence['source_node_ids']):
+    source_nodes = set(occurrence['source_node_ids'])
+    for node in (node for node in original_graph.nodes() if node in source_nodes):
         subgraph.add_node(node, **copy.deepcopy(original_graph.nodes[node]))
         subgraph.nodes[node]['original_node_id'] = node
-    for u, v in occurrence['source_edge_ids']:
-        if original_graph.has_edge(u, v):
-            subgraph.add_edge(u, v, **copy.deepcopy(original_graph.edges[u, v]))
-            subgraph.edges[u, v]['original_edge'] = _edge_key(u, v)
+    for edge_id in occurrence['source_edge_ids']:
+        if original_graph.is_multigraph():
+            u, v, key = edge_id
+            if original_graph.has_edge(u, v, key):
+                data = copy.deepcopy(original_graph.edges[u, v, key])
+                subgraph.add_edge(u, v, key=key, **data)
+                subgraph.edges[u, v, key]['original_edge'] = edge_id
+        else:
+            u, v = edge_id
+            if original_graph.has_edge(u, v):
+                data = copy.deepcopy(original_graph.edges[u, v])
+                subgraph.add_edge(u, v, **data)
+                subgraph.edges[u, v]['original_edge'] = edge_id
     subgraph.graph['source_graph_index'] = occurrence['source_graph_index']
     subgraph.graph['feature_id'] = occurrence['feature_id']
     subgraph.graph['feature_kind'] = occurrence['feature_kind']
@@ -362,6 +443,8 @@ class _FeatureArchiveCollector:
         source_node_ids,
         source_edge_ids,
     ):
+        source_nodes = set(source_node_ids)
+        source_edges = set(source_edge_ids)
         occurrence = {
             'feature_id': feature_id,
             'raw_signature': raw_signature,
@@ -369,8 +452,12 @@ class _FeatureArchiveCollector:
             'source_graph_index': self.graph_index,
             'root_node': root_node,
             'target_node': target_node,
-            'source_node_ids': tuple(sorted(source_node_ids)),
-            'source_edge_ids': tuple(sorted(_edge_key(u, v) for u, v in source_edge_ids)),
+            'source_node_ids': tuple(node for node in self.original_graph.nodes() if node in source_nodes),
+            'source_edge_ids': tuple(
+                edge_id for edge_id in (_edge_id(self.original_graph, u, v, key)
+                    for u, v, key, _ in _edge_records(self.original_graph))
+                if edge_id in source_edges
+            ),
         }
         occurrence['subgraph'] = _induced_subgraph_from_occurrence(self.original_graph, occurrence)
         self.archive[feature_id].append(occurrence)
@@ -379,9 +466,11 @@ class _FeatureArchiveCollector:
 def _prepare_structural_graph(original_graph, radius, distance, connector, degree_threshold=None):
     graph = original_graph.copy()
     ensure_graph_labels(graph)
+    traversal_graph = graph.to_undirected(as_view=True) if graph.is_directed() else graph
+    graph.graph['_traversal_graph'] = traversal_graph
     cutoff = max(radius, connector)
     bfs_cutoff = max(radius, connector, distance)
-    graph.graph['_bfs_cache'] = _build_bfs_cache(graph, bfs_cutoff)
+    graph.graph['_bfs_cache'] = _build_bfs_cache(traversal_graph, bfs_cutoff)
     graph.graph['_structural_cache'] = _build_structural_cache(graph)
     structural_cache = graph.graph['_structural_cache']
 
@@ -394,8 +483,8 @@ def _prepare_structural_graph(original_graph, radius, distance, connector, degre
         structural_cache['node_hashes'][node_idx] = node_hash_value
         graph.nodes[node_idx]['node_hash'] = node_hash_value
     precompute_edge_triplet_hashes(graph)
-    for u, v in graph.edges():
-        structural_cache['edge_triplet_hashes'][_edge_key(u, v)] = graph.edges[u, v]['triplet_hash']
+    for u, v, key, data in _edge_records(graph):
+        structural_cache['edge_triplet_hashes'][_edge_id(graph, u, v, key)] = data['triplet_hash']
 
     for node_idx in graph.nodes():
         rooted_hashes = np.zeros(cutoff + 1, dtype=int)
@@ -422,6 +511,7 @@ def _connector_provenance(
     graph,
     node_idxs_to_dist_dict,
     union_of_shortest_paths,
+    union_path_edges,
     connect,
     include_occurrence_provenance=True,
 ):
@@ -433,10 +523,20 @@ def _connector_provenance(
     node_order = structural_cache.get('node_order')
     rooted_graph_hashes_by_node = structural_cache.get('rooted_graph_hashes', {})
 
-    union_signature = hash_set(
+    node_signatures = [
         hash_sequence((node_idxs_to_dist_dict[node], rooted_graph_hashes_by_node[node][connect - 1]))
         for node in union_of_shortest_paths
-    )
+    ]
+    if graph.is_directed() or graph.is_multigraph():
+        edge_triplet_hashes = structural_cache.get('edge_triplet_hashes', {})
+        edge_signatures = [
+            hash_sequence(("path-edge", edge_triplet_hashes[edge_id]))
+            for edge_id in union_path_edges
+            if edge_id in edge_triplet_hashes
+        ]
+        union_signature = hash_set(node_signatures + edge_signatures)
+    else:
+        union_signature = hash_set(node_signatures)
 
     if not include_occurrence_provenance:
         return set(), set(), union_signature
@@ -445,7 +545,7 @@ def _connector_provenance(
     if connect > 1:
         for path_node in union_of_shortest_paths:
             provenance_nodes.update(_node_ball(graph, path_node, connect - 1))
-    provenance_edges = _induced_edge_ids(provenance_nodes, neighbors_by_node, node_order)
+    provenance_edges = _induced_edge_ids_from_graph(graph, provenance_nodes)
     return provenance_nodes, provenance_edges, union_signature
 
 
@@ -479,8 +579,9 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
                 path_nodes, path_edges = _shortest_path_edge_union(
                     graph, node_idx, target_node, include_edges=True
                 )
-            for neighbor in neighbors_by_node[target_node]:
-                triplet_hash = edge_triplet_hashes.get(_edge_key(target_node, neighbor))
+            for neighbor, edge_key, _, edge_u, edge_v in _incident_edge_records(graph, target_node):
+                edge_id = _edge_id(graph, edge_u, edge_v, edge_key)
+                triplet_hash = edge_triplet_hashes.get(edge_id)
                 if triplet_hash is not None:
                     raw_signature = hash_sequence((dist, triplet_hash))
                     distance_triplet_hash = hash_value(raw_signature, nbits=nbits)
@@ -489,7 +590,7 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
                         source_node_ids = set(path_nodes)
                         source_node_ids.update({target_node, neighbor})
                         source_edge_ids = set(path_edges)
-                        source_edge_ids.add(_edge_key(target_node, neighbor))
+                        source_edge_ids.add(edge_id)
                         archive_collector.add(
                             feature_id=distance_triplet_hash,
                             raw_signature=raw_signature,
@@ -519,6 +620,7 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
                                 graph,
                                 node_idxs_to_dist_dict,
                                 union_of_shortest_paths,
+                                union_path_edges,
                                 connect_depth,
                                 include_occurrence_provenance=archive_collector is not None,
                             )
@@ -550,9 +652,7 @@ def _process_node_features(node_idx, graph, distance, connector, nbits, sigma, a
                         if archive_collector is not None:
                             source_node_ids = _node_ball(graph, node_idx, radius_i)
                             source_node_ids.update(_node_ball(graph, curr_node_idx, radius_j))
-                            source_edge_ids = _induced_edge_ids(
-                                source_node_ids, neighbors_by_node, node_order
-                            )
+                            source_edge_ids = _induced_edge_ids_from_graph(graph, source_node_ids)
                             if connect > 0:
                                 source_node_ids.update(connector_nodes)
                                 source_edge_ids.update(connector_edges)
@@ -650,10 +750,7 @@ def get_edge_attribute_mtx(original_graph, edge_attribute_key):
     Returns:
         numpy.ndarray: The matrix of edge attributes.
     """
-    edge_attributes = [
-        original_graph.edges[edge][edge_attribute_key]
-        for edge in original_graph.edges()
-    ]
+    edge_attributes = [data[edge_attribute_key] for _, _, _, data in _edge_records(original_graph)]
     return np.vstack(edge_attributes) if edge_attributes else np.empty((0, 0), dtype=float)
 
 def reweight_node_vectors_mtx(node_vectors_mtx, original_graph, weight_key):
@@ -689,8 +786,7 @@ def reweight_edge_vectors_mtx(edge_vectors_mtx, original_graph, weight_key):
         scipy.sparse.csr_matrix: The reweighted edge feature matrix.
     """
     weight_vector = np.array([
-        original_graph.edges[edge][weight_key]
-        for edge in original_graph.edges()
+        data[weight_key] for _, _, _, data in _edge_records(original_graph)
     ])
     edge_vectors_mtx = (edge_vectors_mtx.todense().A.T * weight_vector).T
     return csr_matrix(edge_vectors_mtx)
@@ -742,10 +838,21 @@ def get_structural_edge_vectors(original_graph, radius, distance, connector, nbi
         )
     node_idxs = list(original_graph.nodes())
     node_to_row = {node_idx: row_idx for row_idx, node_idx in enumerate(node_idxs)}
-    edge_vectors = [
-        node_vectors_mtx.getrow(node_to_row[u]) + node_vectors_mtx.getrow(node_to_row[v])
-        for u, v in original_graph.edges()
-    ]
+    edge_vectors = []
+    for u, v, key, data in _edge_records(original_graph):
+        row = node_vectors_mtx.getrow(node_to_row[u]) + node_vectors_mtx.getrow(node_to_row[v])
+        if original_graph.is_directed():
+            orientation_signature = hash_sequence((
+                "directed-edge-row",
+                _hash(original_graph.nodes[u].get('label', 0)),
+                _hash(data.get('label', 0)),
+                _hash(original_graph.nodes[v].get('label', 0)),
+            ))
+            orientation_code = hash_value(orientation_signature, nbits=nbits)
+            row = row.tolil()
+            row[0, orientation_code] += 1
+            row = row.tocsr()
+        edge_vectors.append(row)
     if not edge_vectors:
         return csr_matrix((0, node_vectors_mtx.shape[1]), dtype=node_vectors_mtx.dtype)
     return sp.sparse.vstack(edge_vectors, format="csr")
@@ -1183,9 +1290,9 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
 
         if self.edge_attribute_key:
             edge_attribute_mtx = np.vstack([
-                graph.edges[u, v][self.edge_attribute_key]
+                data[self.edge_attribute_key]
                 for graph in graphs
-                for u, v in graph.edges()
+                for _, _, _, data in _edge_records(graph)
             ]) if any(graph.number_of_edges() for graph in graphs) else np.empty((0, 0))
             if edge_attribute_mtx.shape[1]:
                 self.edge_attribute_n_features_in_ = edge_attribute_mtx.shape[1]
@@ -1262,18 +1369,19 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
             return graphs
         out_graphs = []
         for graph in graphs:
-            edges = list(graph.edges())
+            edges = list(_edge_records(graph))
             if not edges:
                 out_graphs.append(graph.copy())
                 continue
             attribute_mtx = np.vstack([
-                graph.edges[u, v][self.edge_attribute_key] for u, v in edges
+                data[self.edge_attribute_key] for _, _, _, data in edges
             ])
             embeddings = self.edge_embedder.transform(attribute_mtx)
             out_graph = graph.copy()
-            for (u, v), embedding in zip(edges, embeddings):
-                out_graph.edges[u, v]['original_' + self.edge_attribute_key] = graph.edges[u, v][self.edge_attribute_key]
-                out_graph.edges[u, v][self.edge_attribute_key] = embedding
+            for (u, v, key, data), embedding in zip(edges, embeddings):
+                out_data = out_graph.edges[u, v, key] if out_graph.is_multigraph() else out_graph.edges[u, v]
+                out_data['original_' + self.edge_attribute_key] = data[self.edge_attribute_key]
+                out_data[self.edge_attribute_key] = embedding
             out_graphs.append(out_graph)
         return out_graphs
 
@@ -1283,17 +1391,18 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
             return graphs
         out_graphs = []
         for graph in graphs:
-            edges = list(graph.edges())
+            edges = list(_edge_records(graph))
             if not edges:
                 out_graphs.append(graph.copy())
                 continue
             attribute_mtx = np.vstack([
-                graph.edges[u, v][self.edge_attribute_key] for u, v in edges
+                data[self.edge_attribute_key] for _, _, _, data in edges
             ])
             labels = self.edge_classifier.predict(attribute_mtx)
             out_graph = graph.copy()
-            for (u, v), label in zip(edges, labels):
-                out_graph.edges[u, v]['label'] = label
+            for (u, v, key, _), label in zip(edges, labels):
+                out_data = out_graph.edges[u, v, key] if out_graph.is_multigraph() else out_graph.edges[u, v]
+                out_data['label'] = label
             out_graphs.append(out_graph)
         return out_graphs
 
@@ -1326,7 +1435,7 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
         if self.edge_attribute_key and edge_attribute_width is None:
             for graph in graphs:
                 if graph.number_of_edges():
-                    edge_attribute_width = len(graph.edges[next(iter(graph.edges()))][self.edge_attribute_key])
+                    edge_attribute_width = len(next(_edge_records(graph))[3][self.edge_attribute_key])
                     break
 
         if self.use_node_kernel:
@@ -2360,9 +2469,7 @@ class EdgeNSPPK(BaseEstimator, TransformerMixin):
         if base.edge_attribute_key and edge_attribute_width is None:
             for graph in graphs:
                 if graph.number_of_edges():
-                    edge_attribute_width = len(
-                        graph.edges[next(iter(graph.edges()))][base.edge_attribute_key]
-                    )
+                    edge_attribute_width = len(next(_edge_records(graph))[3][base.edge_attribute_key])
                     break
 
         edge_matrices = paired_edge_vector_encoder(

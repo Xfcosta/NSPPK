@@ -75,7 +75,7 @@ This is the hash of the raw discrete node label only.
 
 The next level is `node_hash(node_idx, graph)` in [src/hash.py](../src/hash.py).
 
-For one node `u`, it computes:
+For an undirected simple graph, the existing calculation for node `u` is:
 
 1. `uh = _hash(label(u))`
 2. for each neighbor `v`, compute
@@ -106,9 +106,11 @@ This produces one hash per node that depends on:
 
 but not on neighbor ordering.
 
+For directed graphs, each incident edge pattern also records whether the edge is incoming or outgoing relative to `u`. For multigraphs, every keyed edge contributes its own pattern, so parallel-edge multiplicity and labels affect the local hash. The distance layers described below use the undirected projection of a directed graph.
+
 ## 5. Edge Triplet Hash
 
-For each edge `(u, v)`, `edge_triplet_hash(u, v, graph)` computes:
+For each undirected edge `(u, v)`, `edge_triplet_hash(u, v, graph)` computes:
 
 ```python
 hash_set([
@@ -118,7 +120,7 @@ hash_set([
 ])
 ```
 
-This is symmetric in `u` and `v` because `hash_set(...)` sorts before hashing.
+This is symmetric in `u` and `v` because `hash_set(...)` sorts before hashing. Directed edges instead hash the ordered source label, edge label, and target label. Each keyed parallel edge is hashed separately.
 
 These values are precomputed once in `precompute_edge_triplet_hashes(graph)`.
 

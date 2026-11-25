@@ -215,14 +215,19 @@ class ImportanceNSPPK(object):
             for node_idx, weight in zip(out_graph.nodes(), normalized_weights):
                 out_graph.nodes[node_idx][self.importance_key] = weight
 
-            for u, v in out_graph.edges():
-                out_graph.edges[u, v][self.importance_key] = out_graph.nodes[u][self.importance_key] * out_graph.nodes[v][self.importance_key]
+            edge_records = list(out_graph.edges(keys=True)) if out_graph.is_multigraph() else list(out_graph.edges())
+            for edge in edge_records:
+                u, v = edge[:2]
+                edge_data = out_graph.edges[u, v, edge[2]] if out_graph.is_multigraph() else out_graph.edges[u, v]
+                edge_data[self.importance_key] = out_graph.nodes[u][self.importance_key] * out_graph.nodes[v][self.importance_key]
 
             for u, node_feature in zip(out_graph.nodes(), node_feature_mtx):
                 out_graph.nodes[u]['node_feature'] = node_feature
 
-            for u, v in out_graph.edges():
-                out_graph.edges[u, v]['edge_feature'] = out_graph.nodes[u]['node_feature'] + out_graph.nodes[v]['node_feature']
+            for edge in edge_records:
+                u, v = edge[:2]
+                edge_data = out_graph.edges[u, v, edge[2]] if out_graph.is_multigraph() else out_graph.edges[u, v]
+                edge_data['edge_feature'] = out_graph.nodes[u]['node_feature'] + out_graph.nodes[v]['node_feature']
 
             out_graphs.append(out_graph)
 

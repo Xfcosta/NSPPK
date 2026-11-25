@@ -11,19 +11,19 @@ For a runnable example, see [Edge NSPPK Demo](../notebooks/Edge%20NSPPK%20Demo.i
 
 ## Input contract
 
-Pass simple, undirected `networkx.Graph` objects. Every edge must have a numeric vector at `edge_attribute_key`, and the vectors must have the same width throughout the graphs being encoded. Edge rows and edge attributes use the order from `graph.edges()`; use that order when aligning an output matrix with edges.
+Pass `networkx.Graph`, `DiGraph`, `MultiGraph`, or `MultiDiGraph` objects. Every edge must have a numeric vector at `edge_attribute_key`, and the vectors must have the same width throughout the graphs being encoded. Edge rows and edge attributes follow NetworkX edge iteration order; for multigraphs, each keyed edge receives its own row.
 
-The current structural hash is undirected and treats each edge once. Direction in a `DiGraph` and parallel-edge identity in a `MultiGraph` are not represented. Existing discrete edge labels remain supported independently of continuous attributes.
+Directed graphs use the underlying undirected graph for distances, neighborhoods, and shortest-path unions. Structural local patterns retain each arc's direction. Parallel edges, including self-loops, contribute individually and retain their labels and attributes. Existing discrete edge labels remain supported independently of continuous attributes.
 
 ## How an edge gets a structural row
 
-Let `X_N` be the structural node feature matrix, with one row per node and `F = 2 ** nbits` columns. For an edge `e = (u, v)`, NSPPK defines its structural row by adding the rows for its endpoints:
+Let `X_N` be the structural node feature matrix, with one row per node and `F = 2 ** nbits` columns. For an undirected edge `e = (u, v)`, NSPPK defines its structural row by adding the rows for its endpoints:
 
 ```text
 X_E[e] = X_N[u] + X_N[v]
 ```
 
-The structural node matrix already contains NSPPK's features over rooted radii, root-pair distances, and connector/path summaries, plus the configured edge-triplet features. Summing both endpoint rows gives the edge a symmetric representation that reuses these same structural features and caches. If a feature occurs in both endpoint rows, its value is added from both sides.
+The structural node matrix already contains NSPPK's features over rooted radii, root-pair distances, and connector/path summaries, plus the configured edge-triplet features. Summing both endpoint rows gives the edge a symmetric representation that reuses these same structural features and caches. If a feature occurs in both endpoint rows, its value is added from both sides. A directed edge also adds a feature hashed from its ordered source label, edge label, and target label.
 
 ## `EdgeNSPPK`: one row per edge
 

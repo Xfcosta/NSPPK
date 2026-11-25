@@ -234,10 +234,16 @@ def plot_graph_importance(
             [graph.nodes[node].get(importance_key, 0.0) for node in graph.nodes()],
             dtype=float,
         )
-        edge_values = [
-            graph.edges[u, v].get(importance_key, 0.0)
-            for u, v in graph.edges()
-        ]
+        if graph.is_multigraph():
+            edge_values = [
+                graph.edges[u, v, key].get(importance_key, 0.0)
+                for u, v, key in graph.edges(keys=True)
+            ]
+        else:
+            edge_values = [
+                graph.edges[u, v].get(importance_key, 0.0)
+                for u, v in graph.edges()
+            ]
         edge_widths = 1.0 + 2.5 * np.asarray(edge_values, dtype=float)
 
         nx.draw(

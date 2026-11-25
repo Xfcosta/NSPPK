@@ -4,15 +4,15 @@ This page describes the public encoder contract. For data loading, see [IO.md](I
 
 ## Input graphs
 
-Pass a list of simple, undirected `networkx.Graph` objects to `fit`, `transform`, or `fit_transform`. A graph must have hashable node IDs. Each node and edge may have a discrete `label` attribute. If a label is missing, the structural encoder uses `0` for that node or edge in its working copy; it does not add those labels to the input graph.
+Pass a list of NetworkX `Graph`, `DiGraph`, `MultiGraph`, or `MultiDiGraph` objects to `fit`, `transform`, or `fit_transform`. A graph must have hashable node IDs. Each node and edge may have a discrete `label` attribute. If a label is missing, the structural encoder uses `0` for that node or edge in its working copy; it does not add those labels to the input graph. Directed graphs use the underlying undirected graph for distances, neighborhoods, and shortest-path unions, but encode arc direction in local and edge patterns. Parallel edges, including loops, contribute individually.
 
 For continuous node features, set `node_attribute_key` to the attribute name. Every node in every graph must have a numeric vector at that key, and vectors must have the same width. Attribute preprocessing options require this key.
 
-For continuous edge features, set `edge_attribute_key`. Every edge must have a numeric vector at that key, with a consistent width. Edge vectors follow `graph.edges()` iteration order. Edge attribute preprocessing options require this key.
+For continuous edge features, set `edge_attribute_key`. Every edge must have a numeric vector at that key, with a consistent width. Edge vectors follow NetworkX edge iteration order; each keyed multigraph edge gets its own vector row. Edge attribute preprocessing options require this key.
 
 See [Edge attributes and edge-level features](EDGE_ATTRIBUTES.md) for the endpoint-sum definition, edge-row column layout, graph-level aggregation, preprocessing behavior, and empty-graph details.
 
-`DiGraph` direction and parallel-edge semantics are not represented by the current hash construction. Use ordinary undirected `Graph` inputs.
+For details on directed and multigraph hashing and edge rows, see [Edge attributes and edge-level features](EDGE_ATTRIBUTES.md) and [Hashing procedure](HASH.md).
 
 ## Encoders
 

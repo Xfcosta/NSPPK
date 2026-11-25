@@ -39,10 +39,30 @@ def _hash_unordered_triplet(first, second, third):
 
 def node_hash(node_idx, graph):
     uh = _hash(graph.nodes[node_idx]['label'])
-    nh = hash_set(
-        _hash((_hash(graph.nodes[v]['label']), _hash(graph.edges[node_idx, v]['label'])))
-        for v in graph.neighbors(node_idx)
-    )
+    incident_patterns = []
+    if graph.is_directed():
+        incident = []
+        for u, v, data in graph.out_edges(node_idx, data=True):
+            incident.append(("out", v, data))
+        for u, v, data in graph.in_edges(node_idx, data=True):
+            if u == v:  # A loop is represented once.
+                continue
+            incident.append(("in", u, data))
+        for direction, neighbor, data in incident:
+            incident_patterns.append(_hash((
+                direction,
+                _hash(graph.nodes[neighbor]['label']),
+                _hash(data['label']),
+            )))
+    else:
+        for neighbor in graph.neighbors(node_idx):
+            data_items = graph[node_idx][neighbor].values() if graph.is_multigraph() else (graph[node_idx][neighbor],)
+            for data in data_items:
+                incident_patterns.append(_hash((
+                    _hash(graph.nodes[neighbor]['label']),
+                    _hash(data['label']),
+                )))
+    nh = hash_set(incident_patterns)
     ext_node_h = _hash((uh, nh))
     return ext_node_h
 
@@ -94,14 +114,26 @@ def rooted_graph_hashes(
     return h_list
 
 
-def edge_triplet_hash(u, v, graph):
+def edge_triplet_hash(u, v, graph, edge_key=None):
+    data = graph.edges[u, v, edge_key] if graph.is_multigraph() else graph.edges[u, v]
+    if graph.is_directed():
+        return _hash((
+            "directed-edge",
+            _hash(graph.nodes[u]['label']),
+            _hash(data['label']),
+            _hash(graph.nodes[v]['label']),
+        ))
     return _hash_unordered_triplet(
         _hash(graph.nodes[u]['label']),
-        _hash(graph.edges[u, v]['label']),
+        _hash(data['label']),
         _hash(graph.nodes[v]['label']),
     )
 
 
 def precompute_edge_triplet_hashes(graph):
-    for u, v in graph.edges():
-        graph.edges[u, v]['triplet_hash'] = edge_triplet_hash(u, v, graph)
+    records = graph.edges(keys=True) if graph.is_multigraph() else graph.edges()
+    for edge in records:
+        u, v = edge[:2]
+        key = edge[2] if graph.is_multigraph() else None
+        data = graph.edges[u, v, key] if graph.is_multigraph() else graph.edges[u, v]
+        data['triplet_hash'] = edge_triplet_hash(u, v, graph, key)
