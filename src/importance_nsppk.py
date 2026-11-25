@@ -39,7 +39,7 @@ class ImportanceNSPPK(object):
             prepared_graphs = self.node_nsppk.nsppk.base_nsppk.set_discrete_labels(prepared_graphs)
         return prepared_graphs
 
-    def fit(self, graphs, targets=None):
+    def fit(self, graphs, targets=None, root_node_ids=None):
         if isinstance(self.n_iter, bool) or not isinstance(self.n_iter, Integral) or self.n_iter < 1:
             raise ValueError("n_iter must be a positive integer.")
         if isinstance(self.n_estimators, bool) or not isinstance(self.n_estimators, Integral) or self.n_estimators < 1:
@@ -90,8 +90,14 @@ class ImportanceNSPPK(object):
                 "in both subsets; provide more graphs or fewer classes."
             )
 
-        node_feature_mtx_list = self.node_nsppk.fit_transform(graphs)
-        X = np.vstack([node_feature_mtx.sum(axis=0) for node_feature_mtx in node_feature_mtx_list])
+        self.node_nsppk.fit(graphs, targets)
+        node_feature_mtx_list = self.node_nsppk.transform(
+            graphs, root_node_ids=root_node_ids
+        )
+        X = np.vstack([
+            np.asarray(node_feature_mtx.sum(axis=0)).reshape(-1)
+            for node_feature_mtx in node_feature_mtx_list
+        ])
         if X.ndim != 2 or X.shape[1] == 0:
             raise ValueError("node_nsppk produced no features to fit importance weights.")
 
@@ -202,16 +208,35 @@ class ImportanceNSPPK(object):
         ranked_features.sort(key=lambda item: (-item['importance'], item['feature_id']))
         return ranked_features[:top_k]
 
-    def transform(self, graphs):
+    def transform(self, graphs, root_node_ids=None):
         graphs = list(graphs)
         graph_strategy = _select_graph_hash_strategy(graphs)
-        node_feature_mtx_list = self.node_nsppk.transform(graphs)
+        if root_node_ids is not None:
+            root_node_ids = [
+                None if roots is None else list(roots) for roots in root_node_ids
+            ]
+        node_feature_mtx_list = self.node_nsppk.transform(
+            graphs, root_node_ids=root_node_ids
+        )
+        if root_node_ids is None:
+            selected_roots_by_graph = [None] * len(graphs)
+        else:
+            selected_roots_by_graph = [
+                None if roots is None else set(roots) for roots in root_node_ids
+            ]
         out_graphs = []
 
-        for graph, node_feature_mtx in zip(graphs, node_feature_mtx_list):
+        for graph, node_feature_mtx, selected_roots in zip(
+            graphs, node_feature_mtx_list, selected_roots_by_graph
+        ):
             out_graph = graph.copy()
-            weights = node_feature_mtx * self.feature_importance_vector
-            weights = np.sum(weights, axis=1)
+            if hasattr(node_feature_mtx, 'multiply'):
+                weighted_features = node_feature_mtx.multiply(
+                    self.feature_importance_vector
+                )
+            else:
+                weighted_features = node_feature_mtx * self.feature_importance_vector
+            weights = np.asarray(weighted_features.sum(axis=1)).reshape(-1)
 
             if self.normalize:
                 max_weight = np.max(weights) if np.max(weights) > 0 else 1
@@ -220,7 +245,9 @@ class ImportanceNSPPK(object):
                 normalized_weights = weights
 
             for node_idx, weight in zip(out_graph.nodes(), normalized_weights):
-                out_graph.nodes[node_idx][self.importance_key] = weight
+                out_graph.nodes[node_idx][self.importance_key] = (
+                    weight if selected_roots is None or node_idx in selected_roots else 0.0
+                )
 
             edge_records = list(graph_strategy.edge_records(out_graph))
             for u, v, _, edge_data in edge_records:

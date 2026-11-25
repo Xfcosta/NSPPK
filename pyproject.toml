@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nsppk"
-version = "3.0.0"
+version = "3.1.0"
 description = "Neighbourhood Subgraph Pairwise Pathway Kernel for graph feature extraction."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,4 +42,4 @@ docs = [
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["nsppk", "importance_nsppk", "hash", "graph_io", "utils"]
+py-modules = ["nsppk", "importance_nsppk", "recursive_nsppk", "hash", "graph_io", "utils"]

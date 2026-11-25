@@ -94,6 +94,36 @@ class EncoderApiTests(unittest.TestCase):
         np.testing.assert_array_equal(first[:, 1].toarray().ravel(), np.asarray([1, 2, 1]))
         self.assertNotIn("node_hash", graph.nodes[0])
 
+    def test_root_node_filter_preserves_rows_and_limits_outer_roots(self):
+        graph = _labeled_path()
+        encoder = NodeNSPPK(radius=1, distance=2, nbits=6, dense=False, parallel=False)
+        encoder.fit([graph])
+        full = encoder.transform([graph])[0].toarray()
+        filtered = encoder.transform([graph], root_node_ids=[[1]])[0].toarray()
+
+        self.assertEqual(filtered.shape, full.shape)
+        np.testing.assert_array_equal(filtered[1], full[1])
+        np.testing.assert_array_equal(filtered[0, 2:], np.zeros(full.shape[1] - 2))
+        np.testing.assert_array_equal(filtered[2, 2:], np.zeros(full.shape[1] - 2))
+        np.testing.assert_array_equal(filtered[:, :2], full[:, :2])
+
+    def test_graph_encoder_root_filter_matches_selected_node_rows(self):
+        graph = _labeled_path()
+        node_encoder = NodeNSPPK(radius=1, distance=2, nbits=6, dense=False, parallel=False)
+        node_encoder.fit([graph])
+        node_mtx = node_encoder.transform([graph])[0]
+        graph_encoder = NSPPK(radius=1, distance=2, nbits=6, dense=False, parallel=False)
+        graph_encoder.fit([graph])
+        filtered_graph = graph_encoder.transform([graph], root_node_ids=[[1]])
+
+        expected = np.asarray(node_mtx.sum(axis=0)).ravel()
+        expected[2:] = node_mtx[1, 2:].toarray().ravel()
+        np.testing.assert_array_equal(filtered_graph.toarray().ravel(), expected)
+        with self.assertRaisesRegex(ValueError, "one node-ID collection per graph"):
+            graph_encoder.transform([graph], root_node_ids=[])
+        with self.assertRaisesRegex(ValueError, "absent from its graph"):
+            graph_encoder.transform([graph], root_node_ids=[[99]])
+
     def test_node_attribute_features_extend_sparse_node_vectors(self):
         graph = _labeled_path()
         vectors = get_node_vectors(

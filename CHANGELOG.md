@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0] - 2026-11-25
+
+- Added optional per-graph root-node filtering to graph-level and node-level NSPPK transforms.
+- Added `RecursiveNSPPKClassifier` with importance-guided stages, cumulative feature output, and scikit-learn classifier compatibility.
+- Added a configurable HIV experiment comparing multiple unfiltered baselines with individual and cumulative recursive stages.
+- Documented the recursive classifier and root-filtering API.
+
 ## [3.0.0] - 2026-11-25
 
 - Replaced `use_edges_as_features` with `use_simplex_features` and `simplex_feature_max_order` for optional node, edge, triangle, and higher-order simplex fragments.

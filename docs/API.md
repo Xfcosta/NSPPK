@@ -85,6 +85,27 @@ classifier = NSPPKClassifier(
 )
 ```
 
+### `RecursiveNSPPKClassifier`
+
+`RecursiveNSPPKClassifier` in `recursive_nsppk` applies `ImportanceNSPPK` stage by stage, restricts later outer roots to the selected nodes, concatenates all stage graph vectors, and fits a scikit-learn classifier.
+
+```python
+from recursive_nsppk import RecursiveNSPPKClassifier
+
+classifier = RecursiveNSPPKClassifier(
+    stages=[
+        {"radius": 1, "distance": 4, "connector": 0},
+        {"radius": 2, "distance": 4, "connector": 1, "use_simplex_features": True},
+    ],
+    root_retention=0.25,
+    estimator="linear",
+)
+classifier.fit(graphs, labels)
+predictions = classifier.predict(new_graphs)
+```
+
+Stage dictionaries override the shared `NodeNSPPK` settings. The default stages use radius 1/distance 4 without connectors, then radius 2/distance 4 with connector 1, and finally add simplex features. `transform_stages(graphs)` returns one graph-feature matrix per stage; `transform(graphs)` concatenates them. The estimator supports `predict_proba` and `decision_function` when the wrapped classifier does.
+
 Custom estimators must match the wrapper task and implement scikit-learn's `fit` and `predict` methods. `estimator_params` can also override parameters on a supplied estimator instance. `predict_proba` and `decision_function` are exposed when the wrapped classifier supports them. The classifier's `score` uses accuracy; the regressor's `score` uses R-squared.
 
 SVD is a feature-reduction step, not a predictor shortcut. To reduce the hashed graph vectors before a linear predictor, pass a scikit-learn pipeline as the estimator:
@@ -106,6 +127,8 @@ classifier = NSPPKClassifier(
 ### `NodeNSPPK`
 
 `NodeNSPPK` uses the same structural parameters as `NSPPK` except `edge_attribute_key` and `use_node_kernel`. It returns a list of per-graph matrices. Matrix row `i` corresponds to the `i`th node in that graph’s iteration order.
+
+Both encoders accept `transform(graphs, root_node_ids=...)`, where `root_node_ids` contains one collection of node IDs per graph. Only those nodes generate structural features as outer roots; all node rows stay aligned with the graph’s node order. Omit the argument to use every node. `ImportanceNSPPK.fit` and `transform` accept the same argument, and zero importance is assigned to nodes excluded from the supplied root collection.
 
 With no continuous node attributes, each matrix has width `2 ** nbits`. With `node_attribute_key` enabled, the matrix also contains attribute and interaction columns. Use the graph’s node iteration order when aligning output rows with node labels.
 

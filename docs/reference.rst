@@ -29,6 +29,10 @@ Predictors
    :members:
    :show-inheritance:
 
+.. autoclass:: recursive_nsppk.RecursiveNSPPKClassifier
+   :members:
+   :show-inheritance:
+
 Importance
 ----------
 

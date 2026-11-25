@@ -47,7 +47,7 @@ from hash import (
 )
 from graph_io import ensure_graph_labels
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 
 _make_rng = _graph_io._make_rng
 _require_rdkit = _graph_io._require_rdkit
@@ -1875,6 +1875,7 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
         """
         check_is_fitted(self, 'is_fitted_')
 
+        graphs = list(graphs)
         if self.node_attribute_key and self.attribute_dim:
             graphs = self.embed_attributes(graphs)
         if self.node_attribute_key and self.attribute_alphabet_size:
@@ -2829,6 +2830,7 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
         """
         check_is_fitted(self.nsppk.base_nsppk, 'is_fitted_')
 
+        graphs = list(graphs)
         if self.nsppk.base_nsppk.node_attribute_key and self.nsppk.base_nsppk.attribute_dim:
             graphs = self.nsppk.base_nsppk.embed_attributes(graphs)
         if self.nsppk.base_nsppk.node_attribute_key and self.nsppk.base_nsppk.attribute_alphabet_size:
