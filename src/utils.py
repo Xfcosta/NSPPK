@@ -102,6 +102,12 @@ def _node_colors(graph, node_color_key, cmap=None):
 
     labels = [graph.nodes[node].get(node_color_key, 0) for node in graph.nodes()]
     unique_labels = list(dict.fromkeys(labels))
+    if isinstance(cmap, dict):
+        color_map = {
+            label: cmap.get(label, DEFAULT_PALETTE[idx % len(DEFAULT_PALETTE)])
+            for idx, label in enumerate(unique_labels)
+        }
+        return [color_map[label] for label in labels]
     if cmap is None:
         color_map = {
             label: DEFAULT_PALETTE[idx % len(DEFAULT_PALETTE)]
@@ -145,7 +151,7 @@ def plot_graphs(
         titles (list[str] | None): Optional title for each graph.
         num_graphs_per_row (int, default=7): Number of graphs per subplot row.
         node_color_key (str | None, default='label'): Node attribute used to group colors.
-        cmap (str | matplotlib.colors.Colormap | None, default=None): Optional colormap used for node groups.
+        cmap (dict | str | matplotlib.colors.Colormap | None, default=None): Optional explicit label-to-color mapping or colormap.
         size (float, default=4.0): Base subplot size used in ``figsize=(size * cols, size * rows)``.
         use_pos (bool, default=False): Use each node's ``pos`` attribute when present for all nodes.
     """

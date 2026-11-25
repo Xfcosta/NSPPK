@@ -190,6 +190,46 @@ def _append_sparse_row_entries(row_entries, row_idx, rows, cols, data):
         cols.append(col_idx)
         data.append(value)
 
+
+def _normalize_root_node_ids(graphs, root_node_ids):
+    """Validate and normalize per-graph selections of outermost feature roots."""
+    graphs = list(graphs)
+    if root_node_ids is None:
+        return [None] * len(graphs)
+    try:
+        selections = list(root_node_ids)
+    except TypeError as exc:
+        raise ValueError("root_node_ids must contain one node-ID collection per graph.") from exc
+    if len(selections) != len(graphs):
+        raise ValueError(
+            "root_node_ids must contain one node-ID collection per graph; "
+            f"got {len(selections)} selections for {len(graphs)} graphs."
+        )
+
+    normalized = []
+    for graph_index, (graph, selection) in enumerate(zip(graphs, selections)):
+        if selection is None:
+            normalized.append(None)
+            continue
+        if isinstance(selection, (str, bytes)):
+            raise ValueError(
+                f"root_node_ids[{graph_index}] must be a collection of node IDs, not a string."
+            )
+        try:
+            selected_nodes = set(selection)
+        except TypeError as exc:
+            raise ValueError(
+                f"root_node_ids[{graph_index}] must be an iterable of node IDs."
+            ) from exc
+        unknown_nodes = selected_nodes - set(graph.nodes())
+        if unknown_nodes:
+            raise ValueError(
+                f"root_node_ids[{graph_index}] contains node IDs absent from its graph: "
+                f"{list(unknown_nodes)[:5]!r}."
+            )
+        normalized.append(selected_nodes)
+    return normalized
+
 def gaussian_weight(dist, sigma):
     if sigma is None:
         return 1.0
@@ -1026,7 +1066,7 @@ def _process_node_features(
 def get_structural_node_vectors(
     original_graph, radius, distance, connector, nbits, degree_threshold=None,
     sigma=None, use_simplex_features=False, graph_strategy=None,
-    simplex_feature_max_order=2,
+    simplex_feature_max_order=2, root_node_ids=None,
 ):
     """
     Generates a feature vector for each node in the graph.
@@ -1042,13 +1082,15 @@ def get_structural_node_vectors(
     rows = []
     cols = []
     data = []
+    selected_roots = _normalize_root_node_ids([graph], [root_node_ids])[0]
     if sigma is None:
         for row_idx, node_idx in enumerate(graph.nodes()):
             accumulator = ListAccumulator()
-            _process_node_features(
-                node_idx, graph, distance, connector, nbits, sigma, accumulator,
-                use_simplex_features, simplex_feature_max_order,
-            )
+            if selected_roots is None or node_idx in selected_roots:
+                _process_node_features(
+                    node_idx, graph, distance, connector, nbits, sigma, accumulator,
+                    use_simplex_features, simplex_feature_max_order,
+                )
             row_entries = Counter(accumulator.get())
             row_entries[0] = 1
             row_entries[1] = graph.degree[node_idx]
@@ -1056,10 +1098,11 @@ def get_structural_node_vectors(
     else:
         for row_idx, node_idx in enumerate(graph.nodes()):
             accumulator = DictAccumulator()
-            _process_node_features(
-                node_idx, graph, distance, connector, nbits, sigma, accumulator,
-                use_simplex_features, simplex_feature_max_order,
-            )
+            if selected_roots is None or node_idx in selected_roots:
+                _process_node_features(
+                    node_idx, graph, distance, connector, nbits, sigma, accumulator,
+                    use_simplex_features, simplex_feature_max_order,
+                )
             row_entries = dict(accumulator.get())
             row_entries[0] = 1.0
             row_entries[1] = float(graph.degree[node_idx])
@@ -1171,7 +1214,7 @@ def reweight_edge_vectors_mtx(edge_vectors_mtx, original_graph, weight_key):
     return csr_matrix(edge_vectors_mtx)
 
 
-def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, add_structural_node_information=True, sigma=None, use_simplex_features=False, structural_node_vectors_mtx=None, graph_strategy=None, simplex_feature_max_order=2):
+def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, add_structural_node_information=True, sigma=None, use_simplex_features=False, structural_node_vectors_mtx=None, graph_strategy=None, simplex_feature_max_order=2, root_node_ids=None):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -1193,7 +1236,7 @@ def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_
         node_vectors_mtx = get_structural_node_vectors(
             original_graph, radius, distance, connector, nbits, degree_threshold,
             sigma, use_simplex_features, graph_strategy,
-            simplex_feature_max_order,
+            simplex_feature_max_order, root_node_ids,
         )
     if weight_key is not None:
         node_vectors_mtx = reweight_node_vectors_mtx(node_vectors_mtx, original_graph, weight_key)
@@ -1284,7 +1327,7 @@ def get_edge_graph_vector(original_graph, radius, distance, connector, nbits,
     return csr_matrix(attribute_mtx.T.dot(edge_structural_mtx.toarray()).reshape(1, -1))
 
 
-def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_key=None, edge_attribute_width=None, graph_strategy=None, simplex_feature_max_order=2):
+def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_key=None, edge_attribute_width=None, graph_strategy=None, simplex_feature_max_order=2, root_node_ids=None):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -1305,7 +1348,7 @@ def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, w
     node_vectors_mtx = get_structural_node_vectors(
         original_graph, radius, distance, connector, nbits, degree_threshold,
         sigma, use_simplex_features, graph_strategy,
-        simplex_feature_max_order,
+        simplex_feature_max_order, root_node_ids,
     )
     node_vectors_mtx = node_vectors_mtx.todense().A
     attribute_node_vectors_mtx = get_node_vectors(
@@ -1315,6 +1358,7 @@ def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, w
         structural_node_vectors_mtx=sp.sparse.csr_matrix(node_vectors_mtx),
         graph_strategy=graph_strategy,
         simplex_feature_max_order=simplex_feature_max_order,
+        root_node_ids=root_node_ids,
     )
     vector_ = attribute_node_vectors_mtx.T.dot(node_vectors_mtx)
     if edge_attribute_key is not None:
@@ -1336,7 +1380,7 @@ def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, w
     return csr_matrix(vector)
 
 
-def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_width=None, graph_strategy=None, simplex_feature_max_order=2):
+def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_width=None, graph_strategy=None, simplex_feature_max_order=2, root_node_ids=None):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -1357,7 +1401,7 @@ def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_
     structural_node_vectors_mtx = get_structural_node_vectors(
         original_graph, radius, distance, connector, nbits, degree_threshold,
         sigma, use_simplex_features, graph_strategy,
-        simplex_feature_max_order,
+        simplex_feature_max_order, root_node_ids,
     )
     node_vectors_mtx = structural_node_vectors_mtx
     if weight_key is not None:
@@ -1397,7 +1441,7 @@ def split_into_chunks(lst, n):
     return [lst[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n)]
 
 
-def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_width=None, simplex_feature_max_order=2):
+def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_width=None, simplex_feature_max_order=2, root_node_ids=None):
     """
     Encodes a list of graphs into a sparse matrix of feature vectors.
 
@@ -1416,6 +1460,7 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
         scipy.sparse.csr_matrix: The sparse matrix where each row is a graph's feature vector.
     """
     graphs = list(graphs)
+    root_node_ids = _normalize_root_node_ids(graphs, root_node_ids)
     strategy = _select_graph_hash_strategy(graphs)
     n_cpus = mp.cpu_count()
 
@@ -1423,20 +1468,20 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
     # Require roughly 1.5 graphs per worker before paying that cost.
     parallel_threshold = max(n_cpus + 1, (3 * n_cpus + 1) // 2)
     if parallel and len(graphs) >= parallel_threshold:
-        def process_subset(subset):
+        def process_subset(indexed_subset):
             return [
-                get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_simplex_features, edge_attribute_width, strategy, simplex_feature_max_order)
-                for graph in subset
+                get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_simplex_features, edge_attribute_width, strategy, simplex_feature_max_order, selected_roots)
+                for graph, selected_roots in indexed_subset
             ]
 
-        subsets = split_into_chunks(graphs, n_cpus)
+        subsets = split_into_chunks(list(zip(graphs, root_node_ids)), n_cpus)
         with mp.Pool(n_cpus) as pool:
             graph_vectors_subsets = pool.map(process_subset, subsets)
         graph_vectors = [vec for subset in graph_vectors_subsets for vec in subset]
     else:
         graph_vectors = [
-            get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_simplex_features, edge_attribute_width, strategy, simplex_feature_max_order)
-            for graph in graphs
+            get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_simplex_features, edge_attribute_width, strategy, simplex_feature_max_order, selected_roots)
+            for graph, selected_roots in zip(graphs, root_node_ids)
         ]
 
     return sp.sparse.vstack(graph_vectors)
@@ -1448,7 +1493,8 @@ def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits
                                      degree_threshold=None, sigma=None,
                                      use_simplex_features=False,
                                      edge_attribute_width=None,
-                                     simplex_feature_max_order=2):
+                                     simplex_feature_max_order=2,
+                                     root_node_ids=None):
     """
     Encodes a list of graphs into a sparse matrix of feature vectors.
 
@@ -1467,30 +1513,31 @@ def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits
         scipy.sparse.csr_matrix: The sparse matrix where each row is a graph's feature vector.
     """
     graphs = list(graphs)
+    root_node_ids = _normalize_root_node_ids(graphs, root_node_ids)
     strategy = _select_graph_hash_strategy(graphs)
     n_cpus = mp.cpu_count()
 
     if parallel and len(graphs) > n_cpus:
-        def process_subset(subset):
+        def process_subset(indexed_subset):
             return [
-                get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, edge_attribute_key=edge_attribute_key, edge_attribute_width=edge_attribute_width, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order)
-                for graph in subset
+                get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, edge_attribute_key=edge_attribute_key, edge_attribute_width=edge_attribute_width, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order, root_node_ids=selected_roots)
+                for graph, selected_roots in indexed_subset
             ]
 
-        subsets = split_into_chunks(graphs, n_cpus)
+        subsets = split_into_chunks(list(zip(graphs, root_node_ids)), n_cpus)
         with mp.Pool(n_cpus) as pool:
             graph_vectors_subsets = pool.map(process_subset, subsets)
         graph_vectors = [vec for subset in graph_vectors_subsets for vec in subset]
     else:
         graph_vectors = [
-            get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, edge_attribute_key=edge_attribute_key, edge_attribute_width=edge_attribute_width, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order)
-            for graph in graphs
+            get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, edge_attribute_key=edge_attribute_key, edge_attribute_width=edge_attribute_width, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order, root_node_ids=selected_roots)
+            for graph, selected_roots in zip(graphs, root_node_ids)
         ]
 
     return sp.sparse.vstack(graph_vectors)
 
 
-def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, simplex_feature_max_order=2):
+def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, simplex_feature_max_order=2, root_node_ids=None):
     """
     Encodes a list of graphs into node feature vectors.
 
@@ -1509,24 +1556,25 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
         list of scipy.sparse.csr_matrix: A list where each element is a matrix of node vectors for a graph.
     """
     graphs = list(graphs)
+    root_node_ids = _normalize_root_node_ids(graphs, root_node_ids)
     strategy = _select_graph_hash_strategy(graphs)
     n_cpus = mp.cpu_count()
 
     if parallel and len(graphs) > n_cpus:
-        def process_subset(subset):
+        def process_subset(indexed_subset):
             return [
-                get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order)
-                for graph in subset
+                get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order, root_node_ids=selected_roots)
+                for graph, selected_roots in indexed_subset
             ]
 
-        subsets = split_into_chunks(graphs, n_cpus)
+        subsets = split_into_chunks(list(zip(graphs, root_node_ids)), n_cpus)
         with mp.Pool(n_cpus) as pool:
             graph_node_vectors_subsets = pool.map(process_subset, subsets)
         graph_node_vectors = [vec for subset in graph_node_vectors_subsets for vec in subset]
     else:
         graph_node_vectors = [
-            get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order)
-            for graph in graphs
+            get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order, root_node_ids=selected_roots)
+            for graph, selected_roots in zip(graphs, root_node_ids)
         ]
 
     return graph_node_vectors
@@ -1813,7 +1861,7 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
             out_graphs.append(out_graph)
         return out_graphs
 
-    def transform(self, graphs):
+    def transform(self, graphs, root_node_ids=None):
         """
         Transforms the input graphs into feature vectors.
 
@@ -1845,6 +1893,7 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
                     edge_attribute_width = len(next(_edge_records(graph))[3][self.edge_attribute_key])
                     break
 
+        root_node_ids = _normalize_root_node_ids(graphs, root_node_ids)
         if self.use_node_kernel:
             data_mtx = paired_node_graphs_vector_encoder(
                 graphs,
@@ -1861,6 +1910,7 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
                 use_simplex_features=self.use_simplex_features,
                 simplex_feature_max_order=self.simplex_feature_max_order,
                 edge_attribute_width=edge_attribute_width,
+                root_node_ids=root_node_ids,
             )
         else:
             data_mtx = paired_graphs_vector_encoder(
@@ -1878,6 +1928,7 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
                 self.use_simplex_features,
                 edge_attribute_width,
                 self.simplex_feature_max_order,
+                root_node_ids,
             )
 
         if self.dense:
@@ -2119,7 +2170,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
             y_batch = np.asarray([extractor(graph) for graph in graph_batch])
             yield X_batch, y_batch
 
-    def transform(self, graphs):
+    def transform(self, graphs, root_node_ids=None):
         """
         Transform the input graphs into feature vectors by delegating to BaseNSPPK.
 
@@ -2130,7 +2181,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
             numpy.ndarray or scipy.sparse.csr_matrix: The feature matrix.
         """
         check_is_fitted(self.base_nsppk, 'is_fitted_')
-        return self.base_nsppk.transform(graphs)
+        return self.base_nsppk.transform(graphs, root_node_ids=root_node_ids)
 
     def get_params(self, deep=True):
         """
@@ -2761,7 +2812,7 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             y_batch = np.asarray([extractor(graph) for graph in graph_batch])
             yield X_batch, y_batch
 
-    def transform(self, graphs):
+    def transform(self, graphs, root_node_ids=None):
         """
         Transform the input graphs into node-level feature vectors.
 
@@ -2796,6 +2847,7 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             sigma=self.nsppk.sigma,
             use_simplex_features=self.nsppk.use_simplex_features,
             simplex_feature_max_order=self.nsppk.simplex_feature_max_order,
+            root_node_ids=root_node_ids,
         )
 
         if self.nsppk.base_nsppk.dense:
