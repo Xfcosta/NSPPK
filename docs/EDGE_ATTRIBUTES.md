@@ -23,7 +23,7 @@ Let `X_N` be the structural node feature matrix, with one row per node and `F = 
 X_E[e] = X_N[u] + X_N[v]
 ```
 
-The structural node matrix already contains NSPPK's features over rooted radii, root-pair distances, and connector/path summaries, plus the configured edge-triplet features. Summing both endpoint rows gives the edge a symmetric representation that reuses these same structural features and caches. If a feature occurs in both endpoint rows, its value is added from both sides. A directed edge also adds a feature hashed from its ordered source label, edge label, and target label.
+The structural node matrix contains NSPPK's rooted, root-pair, and connector/path features, plus simplex fragment features when enabled. Summing both endpoint rows gives the edge a symmetric representation that reuses these structural features and caches. If a feature occurs in both endpoint rows, its value is added from both sides. A directed edge also adds a feature hashed from its ordered source label, edge label, and target label.
 
 ## `EdgeNSPPK`: one row per edge
 
@@ -102,6 +102,6 @@ If only continuous edge attributes are needed, no learned preprocessing is requi
 
 ## How this relates to existing edge labels
 
-Discrete edge labels are already part of structural hashes, including edge-triplet and neighboring-node hashes. Continuous edge attributes do not change the hash IDs by themselves; they change the numeric edge block through `B.T @ X_E`. Enabling `edge_attribute_alphabet_size` adds a learned path into the hashes by replacing edge labels with predicted cluster IDs in the working graph.
+Discrete edge labels are already part of structural hashes, including neighboring-node and optional simplex fragment hashes. Continuous edge attributes do not change the hash IDs by themselves; they change the numeric edge block through `B.T @ X_E`. Enabling `edge_attribute_alphabet_size` adds a learned path into the hashes by replacing edge labels with predicted cluster IDs in the working graph.
 
 `edge_attribute_key` was accepted by earlier NSPPK versions but did not affect vectorization. Starting in 2.0.0, setting it changes graph-vector width and values by adding the graph-level edge block. Leave it unset to preserve node-only graph feature layouts.

@@ -151,7 +151,7 @@ After optional embedding and optional discrete relabeling, NSPPK continues with 
 - node hash construction
 - rooted subgraph hashing
 - paired rooted subgraph hashing
-- optional edge-triplet features
+- optional simplex fragment features from endpoint neighborhoods and expanded shortest-path unions
 
 That process is described in [docs/HASH.md](HASH.md).
 

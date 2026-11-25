@@ -7,7 +7,7 @@ from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.utils.validation import check_is_fitted
 
-from nsppk import get_feature_archive
+from nsppk import _select_graph_hash_strategy, get_feature_archive
 
 
 class ImportanceNSPPK(object):
@@ -133,7 +133,8 @@ class ImportanceNSPPK(object):
 
     def build_feature_archive(self, graphs):
         check_is_fitted(self.node_nsppk.nsppk.base_nsppk, 'is_fitted_')
-        prepared_graphs = self._prepare_graphs_for_node_nsppk(graphs)
+        prepared_graphs = list(self._prepare_graphs_for_node_nsppk(graphs))
+        graph_strategy = _select_graph_hash_strategy(prepared_graphs)
 
         feature_archive = defaultdict(list)
         feature_archive_summary = {}
@@ -148,7 +149,11 @@ class ImportanceNSPPK(object):
                 nbits=self.node_nsppk.nsppk.base_nsppk.nbits,
                 degree_threshold=self.node_nsppk.nsppk.base_nsppk.degree_threshold,
                 sigma=self.node_nsppk.nsppk.sigma,
-                use_edges_as_features=self.node_nsppk.nsppk.use_edges_as_features,
+                use_simplex_features=self.node_nsppk.nsppk.use_simplex_features,
+                simplex_feature_max_order=(
+                    self.node_nsppk.nsppk.simplex_feature_max_order
+                ),
+                graph_strategy=graph_strategy,
             )
             for feature_id, occurrences in graph_archive.items():
                 feature_archive[feature_id].extend(occurrences)
@@ -198,6 +203,8 @@ class ImportanceNSPPK(object):
         return ranked_features[:top_k]
 
     def transform(self, graphs):
+        graphs = list(graphs)
+        graph_strategy = _select_graph_hash_strategy(graphs)
         node_feature_mtx_list = self.node_nsppk.transform(graphs)
         out_graphs = []
 
@@ -215,18 +222,14 @@ class ImportanceNSPPK(object):
             for node_idx, weight in zip(out_graph.nodes(), normalized_weights):
                 out_graph.nodes[node_idx][self.importance_key] = weight
 
-            edge_records = list(out_graph.edges(keys=True)) if out_graph.is_multigraph() else list(out_graph.edges())
-            for edge in edge_records:
-                u, v = edge[:2]
-                edge_data = out_graph.edges[u, v, edge[2]] if out_graph.is_multigraph() else out_graph.edges[u, v]
+            edge_records = list(graph_strategy.edge_records(out_graph))
+            for u, v, _, edge_data in edge_records:
                 edge_data[self.importance_key] = out_graph.nodes[u][self.importance_key] * out_graph.nodes[v][self.importance_key]
 
             for u, node_feature in zip(out_graph.nodes(), node_feature_mtx):
                 out_graph.nodes[u]['node_feature'] = node_feature
 
-            for edge in edge_records:
-                u, v = edge[:2]
-                edge_data = out_graph.edges[u, v, edge[2]] if out_graph.is_multigraph() else out_graph.edges[u, v]
+            for u, v, _, edge_data in edge_records:
                 edge_data['edge_feature'] = out_graph.nodes[u]['node_feature'] + out_graph.nodes[v]['node_feature']
 
             out_graphs.append(out_graph)

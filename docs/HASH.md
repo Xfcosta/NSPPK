@@ -13,7 +13,7 @@ There are four layers:
 3. rooted subgraph hashes that summarize a ball around a root node up to radius `r`
 4. final feature hashes that combine two rooted subgraphs, their graph distance, and optionally connector information
 
-There is also an edge-triplet feature path that hashes a distance plus one labeled edge neighborhood.
+Optional simplex features pair fragments from endpoint neighborhoods and add fragments from expanded shortest-path unions.
 
 ## 1. Primitive Hash
 
@@ -203,27 +203,7 @@ Feature generation happens in [_process_node_features(...)](../src/nsppk.py).
 
 There are two main feature families.
 
-### A. Edge-triplet features
-
-For a root node `u`, a reachable target node `t`, and one neighbor `n` of `t`:
-
-1. compute graph distance `dist(u, t)`
-2. read the precomputed edge-triplet hash for edge `(t, n)`
-3. build the raw signature:
-
-```python
-raw_signature = hash_sequence([dist, triplet_hash])
-```
-
-4. map that raw signature to a feature id:
-
-```python
-distance_triplet_hash = hash_value(raw_signature, nbits=nbits)
-```
-
-This is an edge-centered structural feature anchored at the root node through the distance term.
-
-### B. Paired rooted subgraph features
+### A. Paired rooted subgraph features
 
 For a root node `u` and another node `v` at graph distance `dist`:
 
@@ -240,6 +220,16 @@ raw_signature = hash_sequence([code_i, dist, code_j])
 ```
 
 If `connector > 0`, NSPPK also summarizes the union of shortest paths between `u` and `v`.
+
+### B. Simplex fragment features
+
+When `use_simplex_features=True`, NSPPK enumerates all cliques up to `simplex_feature_max_order` in each induced endpoint neighborhood. A dimension-`k` simplex contains `k + 1` distinct vertices; parallel edges do not create additional simplices. Fragment hashes include node labels and edge-label patterns, canonicalized independently of node identifiers.
+
+For each pair of endpoint fragments, NSPPK hashes their unordered pair with the roots' distance and unordered pair of root-node labels. At each connector depth, it also emits one feature per simplex in the induced expanded shortest-path-union region, using that same distance and root-label context.
+
+For directed graphs, distances and clique membership use the underlying undirected projection, while fragment hashes retain the directions of original arcs. For multigraphs, parallel-edge label patterns are included in fragment hashes, but each vertex set contributes one simplex.
+
+Fragments are cached by induced node set and maximum order on the prepared graph, so repeated neighborhoods or path regions reuse the same enumeration.
 
 That connector summary is built in `_connector_provenance(...)` as:
 
@@ -321,12 +311,7 @@ raw_signature = hash_sequence([
 ])
 ```
 
-For an edge-triplet feature:
-
-```python
-raw_signature = hash_sequence([dist, edge_triplet_hash])
-feature_id = hash_value(raw_signature, nbits)
-```
+For a simplex neighborhood-pair feature, the raw signature contains a source tag, root distance, unordered root-label pair, and unordered pair of `(simplex_order, fragment_hash)` values. A path-union simplex feature contains a source tag, root distance, unordered root-label pair, simplex order, and fragment hash.
 
 ## 11. Invariance Properties
 
@@ -334,8 +319,8 @@ The implementation gets its invariances from the choice between `hash_set(...)` 
 
 - permutation invariance inside neighbor collections and shell collections comes from `hash_set(...)`
 - dependence on shell order, radius growth, and tuple position comes from `hash_sequence(...)`
-- edge triplets are symmetric because they use `hash_set(...)`
-- paired rooted features are generally ordered as `[left_subgraph, distance, right_subgraph, ...]`
+- simplex endpoint-fragment pairs are unordered and remain symmetric under endpoint swaps
+- rooted NSPPK features are generally ordered as `[left_subgraph, distance, right_subgraph, ...]`
 
 ## 12. Important Caveat
 

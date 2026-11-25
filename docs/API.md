@@ -4,7 +4,7 @@ This page describes the public encoder contract. For data loading, see [IO.md](I
 
 ## Input graphs
 
-Pass a list of NetworkX `Graph`, `DiGraph`, `MultiGraph`, or `MultiDiGraph` objects to `fit`, `transform`, or `fit_transform`. A graph must have hashable node IDs. Each node and edge may have a discrete `label` attribute. If a label is missing, the structural encoder uses `0` for that node or edge in its working copy; it does not add those labels to the input graph. Directed graphs use the underlying undirected graph for distances, neighborhoods, and shortest-path unions, but encode arc direction in local and edge patterns. Parallel edges, including loops, contribute individually.
+Pass a list of NetworkX `Graph`, `DiGraph`, `MultiGraph`, or `MultiDiGraph` objects to `fit`, `transform`, or `fit_transform`. All graphs in one call must use the same graph kind; NSPPK infers the kind from up to the first ten graphs and uses that strategy for the whole batch. A graph must have hashable node IDs. Each node and edge may have a discrete `label` attribute. If a label is missing, the structural encoder uses `0` for that node or edge in its working copy; it does not add those labels to the input graph. Directed graphs use the underlying undirected graph for distances, neighborhoods, and shortest-path unions, but encode arc direction in local and edge patterns. Parallel edges, including loops, contribute individually.
 
 For continuous node features, set `node_attribute_key` to the attribute name. Every node in every graph must have a numeric vector at that key, and vectors must have the same width. Attribute preprocessing options require this key.
 
@@ -38,7 +38,8 @@ For details on directed and multigraph hashing and edge rows, see [Edge attribut
 | `edge_attribute_alphabet_size` | `None` | If set, cluster edge vectors and learn a classifier that predicts cluster labels for new edges. Requires `edge_attribute_key`; must be positive. Predicted labels replace edge `label` values in working graph copies. Built-in KMeans uses `random_state=0`. |
 | `use_node_kernel` | `False` | Use the node-graph interaction representation instead of the standard graph sum. This can greatly increase output width. |
 | `sigma` | `None` | If set to a finite positive number, weight contributions by `exp(-(distance ** 2) / sigma ** 2)`. |
-| `use_edges_as_features` | `True` | Include distance-tagged edge-triplet features when true. |
+| `use_simplex_features` | `False` | Add distance- and root-label-contextualized simplex fragment features from endpoint neighborhoods and expanded shortest-path unions. |
+| `simplex_feature_max_order` | `2` | Maximum simplex dimension, inclusive: 0=nodes, 1=edges, 2=triangles, 3=tetrahedra. Must be a non-negative integer. |
 
 The constructor also accepts the aliases `r`, `d`, and `c` for `radius`, `distance`, and `connector`. Prefer the long names.
 

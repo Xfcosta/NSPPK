@@ -18,7 +18,7 @@ Its job is:
 - rows: graph nodes
 - columns: NSPPK feature ids
 
-Each row says which hashed rooted / paired / edge-triplet patterns are active around one node.
+Each row says which hashed rooted and paired patterns are active around one node, including optional simplex fragment features.
 
 `ImportanceNSPPK` learns a global importance weight per NSPPK feature column. Then, for each node, it sums the weights of the active features in that node row. That sum becomes the node importance score.
 

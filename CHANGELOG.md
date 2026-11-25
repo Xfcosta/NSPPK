@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.0] - 2026-11-25
+
+- Replaced `use_edges_as_features` with `use_simplex_features` and `simplex_feature_max_order` for optional node, edge, triangle, and higher-order simplex fragments.
+- Added cached simplex fragment pairing for endpoint neighborhoods and expanded shortest-path unions, with directed arc orientation and multigraph edge patterns retained in hashes.
+- Added a dense-graph fragment and HIV runtime/accuracy notebook.
+- Removed the legacy `use_edges_as_features` parameter; this is a breaking API change.
+
 ## [2.1.0] - 2026-11-25
 
 - Added support for directed graphs and multigraphs, preserving edge direction, parallel edges, and self-loops in structural features and archives.
