@@ -5,7 +5,7 @@ import numpy as np
 from sklearn.base import clone
 
 from importance_nsppk import ImportanceNSPPK
-from nsppk import NSPPK, NodeNSPPK, get_node_vectors, get_structural_node_vectors
+from nsppk import EdgeNSPPK, NSPPK, NodeNSPPK, get_node_vectors, get_structural_node_vectors
 
 
 def _labeled_path():
@@ -18,6 +18,58 @@ def _labeled_path():
 
 
 class EncoderApiTests(unittest.TestCase):
+    def test_parameter_sets_union_graph_node_and_edge_features(self):
+        graph = _labeled_path()
+        parameter_sets = [
+            {"radius": 0, "distance": 4, "connector": 0, "use_simplex_features": False},
+            {"radius": 3, "distance": 0, "connector": 0, "use_simplex_features": True},
+        ]
+
+        union_graph = NSPPK(nbits=6, dense=False, parallel=False, parameters=parameter_sets)
+        union_graph.fit([graph])
+        actual_graph = union_graph.transform([graph]).toarray()[0]
+        expected_graph = np.zeros_like(actual_graph)
+        for config in parameter_sets:
+            single = NSPPK(nbits=6, dense=False, parallel=False, **config)
+            single.fit([graph])
+            expected_graph += single.transform([graph]).toarray()[0]
+        np.testing.assert_array_equal(actual_graph[2:], expected_graph[2:])
+
+        union_node = NodeNSPPK(nbits=6, dense=False, parallel=False, parameters=parameter_sets)
+        union_node.fit([graph])
+        actual_nodes = union_node.transform([graph])[0].toarray()
+        expected_nodes = np.zeros_like(actual_nodes)
+        for config in parameter_sets:
+            single = NodeNSPPK(nbits=6, dense=False, parallel=False, **config)
+            single.fit([graph])
+            expected_nodes += single.transform([graph])[0].toarray()
+        np.testing.assert_array_equal(actual_nodes[:, 2:], expected_nodes[:, 2:])
+
+        union_edge = EdgeNSPPK(nbits=6, dense=False, parallel=False, parameters=parameter_sets)
+        union_edge.fit([graph])
+        actual_edges = union_edge.transform([graph])[0].toarray()
+        expected_edges = np.zeros_like(actual_edges)
+        for config in parameter_sets:
+            single = EdgeNSPPK(nbits=6, dense=False, parallel=False, **config)
+            single.fit([graph])
+            expected_edges += single.transform([graph])[0].toarray()
+        np.testing.assert_array_equal(actual_edges[:, 2:], expected_edges[:, 2:])
+        np.testing.assert_array_equal(actual_graph[:2], expected_graph[:2] / len(parameter_sets))
+
+    def test_parameter_sets_are_validated_and_cloneable_on_all_encoders(self):
+        parameter_sets = [{"radius": 0}, {"distance": 2, "use_simplex_features": True}]
+        for encoder in (
+            NSPPK(parameters=parameter_sets, parallel=False),
+            NodeNSPPK(parameters=parameter_sets, parallel=False),
+            EdgeNSPPK(parameters=parameter_sets, parallel=False),
+        ):
+            with self.subTest(encoder=type(encoder).__name__):
+                self.assertEqual(clone(encoder).get_params(deep=False)["parameters"], parameter_sets)
+                with self.assertRaisesRegex(ValueError, "at least one"):
+                    encoder.set_params(parameters=[])
+                with self.assertRaisesRegex(ValueError, "Unknown key"):
+                    encoder.set_params(parameters=[{"not_a_parameter": 1}])
+
     def test_alias_updates_sync_estimator_and_wrapped_encoder(self):
         encoder = NSPPK(parallel=False).set_params(r=2, d=4, c=1)
         self.assertEqual((encoder.radius, encoder.distance, encoder.connector), (2, 4, 1))

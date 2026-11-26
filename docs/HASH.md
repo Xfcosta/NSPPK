@@ -223,13 +223,60 @@ If `connector > 0`, NSPPK also summarizes the union of shortest paths between `u
 
 ### B. Simplex fragment features
 
-When `use_simplex_features=True`, NSPPK enumerates all cliques up to `simplex_feature_max_order` in each induced endpoint neighborhood. A dimension-`k` simplex contains `k + 1` distinct vertices; parallel edges do not create additional simplices. Fragment hashes include node labels and edge-label patterns, canonicalized independently of node identifiers.
+When `use_simplex_features=True`, NSPPK enumerates the dimensions selected by `simplex_feature_order` in each induced endpoint neighborhood. A scalar `n` selects all dimensions from 0 through `n`; an inclusive tuple `(min, max)` selects only those dimensions. A dimension-`k` simplex contains `k + 1` distinct vertices. Clique membership is determined from the graph's traversal projection; for directed graphs this is the underlying undirected projection.
 
-For each pair of endpoint fragments, NSPPK hashes their unordered pair with the roots' distance and unordered pair of root-node labels. At each connector depth, it also emits one feature per simplex in the induced expanded shortest-path-union region, using that same distance and root-label context.
+A singleton's structural simplex hash is its own node-label hash. For a clique with two or more vertices, NSPPK reuses each edge's cached triplet hash and hashes the collection with `hash_set(...)`:
 
-For directed graphs, distances and clique membership use the underlying undirected projection, while fragment hashes retain the directions of original arcs. For multigraphs, parallel-edge label patterns are included in fragment hashes, but each vertex set contributes one simplex.
+```python
+simplex_hash = hash_set(edge_triplet_hashes_in_clique)
+```
 
-Fragments are cached by induced node set and maximum order on the prepared graph, so repeated neighborhoods or path regions reuse the same enumeration.
+An undirected edge triplet hash keeps endpoint labels unordered while retaining the edge label's role:
+
+```python
+edge_triplet_hash = hash_sequence((
+    hash_set((node_label_hash_u, node_label_hash_v)),
+    edge_label_hash,
+))
+```
+
+For a directed edge, source and target order is retained:
+
+```python
+edge_triplet_hash = hash_sequence((
+    "directed-edge", source_label_hash, edge_label_hash, target_label_hash,
+))
+```
+
+`hash_set(...)` sorts its inputs but retains duplicate values. Thus parallel edges do not create extra simplices, but their edge hashes contribute with their multiplicity to a clique's structural hash.
+
+At distance zero, NSPPK emits a unary feature per simplex in the root's selected neighborhood. Its context is the root's node-label hash and the selected radius:
+
+```python
+unary_signature = hash_sequence((node_label_hash_u, radius, simplex_hash))
+```
+
+At positive distance, NSPPK enumerates cliques in both endpoint neighborhoods for each selected radius combination, then takes their union by clique vertex set. A clique present in both neighborhoods is emitted once for that combination. Distinct cliques with the same structural hash still each contribute. The feature context uses the unordered pair of root label hashes and the distance:
+
+```python
+pair_context_hash = hash_set((node_label_hash_u, node_label_hash_v))
+pair_signature = hash_sequence((pair_context_hash, distance, simplex_hash))
+```
+
+This removes the Cartesian product of endpoint fragment lists. The same unordered union and root-pair context applies when the roots are visited in reverse order. Distances still use the undirected traversal projection for directed graphs.
+
+For each connector thickness, a simplex in the expanded shortest-path-union region is contextualized by the unordered pair of root label hashes, the root distance, and the connector thickness:
+
+```python
+path_union_signature = hash_sequence((
+    hash_set((node_label_hash_u, node_label_hash_v)),
+    distance,
+    connector_thickness,
+    simplex_hash,
+))
+```
+
+Fragments are cached by induced node set and selected dimension range on the prepared graph, so repeated neighborhoods or path regions reuse the same enumeration. The legacy `simplex_feature_max_order` parameter name remains accepted as an alias.
 
 That connector summary is built in `_connector_provenance(...)` as:
 
@@ -311,22 +358,15 @@ raw_signature = hash_sequence([
 ])
 ```
 
-For a simplex neighborhood-pair feature, the raw signature contains a source tag, root distance, unordered root-label pair, and unordered pair of `(simplex_order, fragment_hash)` values. A path-union simplex feature contains a source tag, root distance, unordered root-label pair, simplex order, and fragment hash.
+Simplex features use the signatures above and are then mapped into the configured feature space with `hash_value(signature, nbits)`. This replaces the previous node-permutation canonicalization and changes feature IDs for simplex-enabled encoders. The revised undirected edge triplet hash is also used in connector summaries for undirected multigraphs, so those feature IDs can change as well. Models using either affected representation must be retrained.
 
 When the root distance is zero, endpoint neighborhoods are the same region, so NSPPK emits each simplex fragment once as a unary feature rather than pairing it with itself:
 
 ```python
-raw_signature = hash_sequence([
-    "simplex-neighborhood-single",
-    0,
-    (root_label_hash, root_label_hash),
-    radius,
-    simplex_order,
-    fragment_hash,
-])
+raw_signature = hash_sequence((root_label_hash, radius, simplex_hash))
 ```
 
-The radius selects the neighborhood used to enumerate fragments. The repeated root-label hash preserves the same endpoint-label conditioning used by distance-positive simplex features.
+At distance zero the root is also the singleton's node, so its label hash appears both as root context and as the singleton structural hash. The radius selects the neighborhood used to enumerate the fragment.
 
 ## 11. Invariance Properties
 
@@ -334,7 +374,7 @@ The implementation gets its invariances from the choice between `hash_set(...)` 
 
 - permutation invariance inside neighbor collections and shell collections comes from `hash_set(...)`
 - dependence on shell order, radius growth, and tuple position comes from `hash_sequence(...)`
-- simplex endpoint-fragment pairs are unordered and remain symmetric under endpoint swaps
+- simplex neighborhood-pair features use a union of both endpoint fragment sets and are symmetric under endpoint swaps
 - rooted NSPPK features are generally ordered as `[left_subgraph, distance, right_subgraph, ...]`
 
 ## 12. Important Caveat

@@ -38,16 +38,37 @@ For details on directed and multigraph hashing and edge rows, see [Edge attribut
 | `edge_attribute_alphabet_size` | `None` | If set, cluster edge vectors and learn a classifier that predicts cluster labels for new edges. Requires `edge_attribute_key`; must be positive. Predicted labels replace edge `label` values in working graph copies. Built-in KMeans uses `random_state=0`. |
 | `use_node_kernel` | `False` | Use the node-graph interaction representation instead of the standard graph sum. This can greatly increase output width. |
 | `sigma` | `None` | If set to a finite positive number, weight contributions by `exp(-(distance ** 2) / sigma ** 2)`. |
-| `use_simplex_features` | `False` | Add distance- and root-label-contextualized simplex fragment features from endpoint neighborhoods and expanded shortest-path unions. |
-| `simplex_feature_max_order` | `2` | Maximum simplex dimension, inclusive: 0=nodes, 1=edges, 2=triangles, 3=tetrahedra. Must be a non-negative integer. |
+| `use_simplex_features` | `False` | Add clique-simplex features from endpoint neighborhoods and expanded shortest-path unions. Positive-distance features use the union of endpoint-neighborhood cliques with root-label and distance context; see [Simplex fragment features](HASH.md#b-simplex-fragment-features). |
+| `simplex_feature_order` | `2` | Simplex dimensions. Scalar `n` includes dimensions `0..n`; tuple `(min, max)` selects that inclusive range. Dimension 2 means triangles. |
+| `parameters` | `None` | Optional list of structural parameter dictionaries. Each dictionary produces another feature pass, and the passes are accumulated into one graph, node, or edge representation. |
 
 The constructor also accepts the aliases `r`, `d`, and `c` for `radius`, `distance`, and `connector`. Prefer the long names.
 
 For example, `radius=(2, 2)` uses only radius 2, while `radius=2` retains the cumulative radii 0, 1, and 2. The same convention applies to `distance` and `connector`.
 
-When `use_simplex_features=True` and distance 0 is selected, the same root supplies both endpoints. Its simplex fragments are enumerated once per selected root radius and encoded as unary neighborhood features. The raw signature includes the sorted endpoint node-label hashes (which are identical at distance 0), the selected radius, the simplex order, and the simplex fragment hash. This avoids constructing fragment pairs for the root with itself.
+For simplex features, singleton fragments use their node-label hash; larger clique fragments hash the cached edge triplets in the clique. Positive-distance features emit the union of fragments from both endpoint neighborhoods, so endpoint order does not matter. See [the hashing reference](HASH.md#b-simplex-fragment-features) for the exact formulas, including directed edges and shortest-path unions.
+
+The revised simplex hashes change feature IDs. The undirected edge-triplet change also affects connector summaries for undirected multigraphs; retrain models that use either representation.
 
 Simplex clique enumeration uses a bitset implementation through dimension 3 and falls back to NetworkX's all-clique enumerator for higher dimensions.
+
+The legacy spelling `simplex_feature_max_order` remains accepted as an alias for `simplex_feature_order`.
+
+For example, `simplex_feature_order=2` includes node, edge, and triangle fragments. Use `simplex_feature_order=(2, 2)` to select triangles only.
+
+`parameters=None` uses the ordinary top-level settings for one feature pass. When a list is supplied, it defines the passes to union; each dictionary may set `radius`, `distance`, `connector`, `sigma`, `use_simplex_features`, and `simplex_feature_order` (or the aliases `r`, `d`, `c`, and `simplex_feature_max_order`). A key omitted from a dictionary inherits its top-level setting. All passes share the encoder’s `nbits`, attributes, degree threshold, and output layout. Matching hashed features accumulate in the same columns.
+
+For example, mix long-range structural features with local simplex features in one output:
+
+```python
+parameters = [
+    {"radius": 0, "distance": 4, "connector": 0, "use_simplex_features": False},
+    {"radius": 3, "distance": 0, "connector": 0, "use_simplex_features": True},
+]
+encoder = NSPPK(parameters=parameters)
+```
+
+The same option is available on `NodeNSPPK` and `EdgeNSPPK`; the supervised `NSPPKClassifier` and `NSPPKRegressor` wrappers also accept it. Node and edge output rows contain the accumulated features for each entity, respectively. Node and edge attributes are applied once to the accumulated structural representation.
 
 ### `NSPPKClassifier` and `NSPPKRegressor`
 

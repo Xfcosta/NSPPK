@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.3.0] - 2026-11-26
+
+- Added `parameters` lists to graph, node, and edge encoders so one output can accumulate features from multiple radius, distance, connector, weighting, and simplex configurations.
+- Revised simplex fragment hashing to use cached edge hashes and order-invariant hash sets, with root-label and distance context. Positive-distance fragments now use the union of endpoint neighborhoods rather than all cross-neighborhood fragment pairs.
+- Changed edge label hashing to preserve endpoint invariance for undirected edges while retaining directed source/target order.
+- Added a 4D node-attribute Gaussian-noise notebook demonstration and refreshed simplex and recursive-feature examples.
+- Documented the feature-union API and revised hashing formulas.
+
 ## [3.2.0] - 2026-11-25
 
 - Added inclusive `(min, max)` tuple ranges for `radius`, `distance`, and `connector`, while preserving scalar cumulative ranges from zero.

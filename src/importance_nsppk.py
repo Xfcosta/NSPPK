@@ -156,8 +156,8 @@ class ImportanceNSPPK(object):
                 degree_threshold=self.node_nsppk.nsppk.base_nsppk.degree_threshold,
                 sigma=self.node_nsppk.nsppk.sigma,
                 use_simplex_features=self.node_nsppk.nsppk.use_simplex_features,
-                simplex_feature_max_order=(
-                    self.node_nsppk.nsppk.simplex_feature_max_order
+                simplex_feature_order=(
+                    self.node_nsppk.nsppk.simplex_feature_order
                 ),
                 graph_strategy=graph_strategy,
             )

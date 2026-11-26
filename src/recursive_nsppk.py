@@ -12,7 +12,7 @@ from sklearn.utils.validation import check_consistent_length, check_is_fitted
 from sklearn.utils.multiclass import check_classification_targets
 
 from importance_nsppk import ImportanceNSPPK
-from nsppk import NodeNSPPK, _NSPPKPredictor
+from nsppk import NodeNSPPK, _NSPPKPredictor, _resolve_simplex_feature_order
 
 
 _DEFAULT_STAGES = (
@@ -59,12 +59,16 @@ class RecursiveNSPPKClassifier(ClassifierMixin, _NSPPKPredictor):
         attribute_alphabet_size=None,
         sigma=None,
         use_simplex_features=False,
-        simplex_feature_max_order=2,
+        simplex_feature_order=2,
+        simplex_feature_max_order=None,
         importance_n_iter=3,
         importance_n_estimators=100,
         importance_quantile=0.5,
         importance_normalize=True,
     ):
+        simplex_feature_order = _resolve_simplex_feature_order(
+            simplex_feature_order, simplex_feature_max_order
+        )
         self.estimator = estimator
         self.estimator_params = estimator_params
         self.stages = stages
@@ -79,7 +83,7 @@ class RecursiveNSPPKClassifier(ClassifierMixin, _NSPPKPredictor):
         self.attribute_alphabet_size = attribute_alphabet_size
         self.sigma = sigma
         self.use_simplex_features = use_simplex_features
-        self.simplex_feature_max_order = simplex_feature_max_order
+        self.simplex_feature_order = simplex_feature_order
         self.importance_n_iter = importance_n_iter
         self.importance_n_estimators = importance_n_estimators
         self.importance_quantile = importance_quantile
@@ -113,7 +117,7 @@ class RecursiveNSPPKClassifier(ClassifierMixin, _NSPPKPredictor):
             "attribute_alphabet_size": self.attribute_alphabet_size,
             "sigma": self.sigma,
             "use_simplex_features": self.use_simplex_features,
-            "simplex_feature_max_order": self.simplex_feature_max_order,
+            "simplex_feature_order": self.simplex_feature_order,
         }
 
     def _make_stage_encoder(self, stage_params):

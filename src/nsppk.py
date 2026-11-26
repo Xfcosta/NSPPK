@@ -2,7 +2,7 @@ import math
 from collections import defaultdict, Counter
 import copy
 from dataclasses import dataclass
-from itertools import islice, permutations, product
+from itertools import islice
 from numbers import Integral, Real
 import networkx as nx
 import numpy as np
@@ -47,7 +47,7 @@ from hash import (
 )
 from graph_io import ensure_graph_labels
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"
 
 _make_rng = _graph_io._make_rng
 _require_rdkit = _graph_io._require_rdkit
@@ -96,20 +96,27 @@ def _inclusive_parameter_values(value, name):
     return range(lower, upper + 1)
 
 
+def _resolve_simplex_feature_order(simplex_feature_order, simplex_feature_max_order):
+    """Resolve the legacy max-order spelling to the canonical order range."""
+    if simplex_feature_max_order is None:
+        return simplex_feature_order
+    if simplex_feature_order == 2 or simplex_feature_order == simplex_feature_max_order:
+        return simplex_feature_max_order
+    raise ValueError(
+        "simplex_feature_order and its legacy alias "
+        "simplex_feature_max_order cannot specify different values."
+    )
+
+
 def _validate_encoder_parameters(
     *, radius, distance, connector, nbits, degree_threshold, dense, parallel,
     node_attribute_key, edge_attribute_key, attribute_dim, attribute_alphabet_size,
     edge_attribute_dim, edge_attribute_alphabet_size, sigma, use_node_kernel,
-    use_simplex_features, simplex_feature_max_order=2,
+    use_simplex_features, simplex_feature_order=2,
 ):
     for name, value in (("radius", radius), ("distance", distance), ("connector", connector)):
         _inclusive_parameter_bounds(value, name)
-    if (
-        isinstance(simplex_feature_max_order, bool)
-        or not isinstance(simplex_feature_max_order, Integral)
-        or simplex_feature_max_order < 0
-    ):
-        raise ValueError("simplex_feature_max_order must be a non-negative integer.")
+    _inclusive_parameter_bounds(simplex_feature_order, "simplex_feature_order")
 
     if isinstance(nbits, bool) or not isinstance(nbits, Integral) or not 2 <= nbits <= 30:
         raise ValueError("nbits must be an integer between 2 and 30.")
@@ -166,7 +173,108 @@ def _validate_encoder_parameters(
             raise ValueError(f"{name} must be a boolean.")
 
 
-_PARAMETER_ALIASES = {"r": "radius", "d": "distance", "c": "connector"}
+def _normalize_feature_parameter_sets(
+    parameters,
+    *,
+    radius,
+    distance,
+    connector,
+    sigma,
+    use_simplex_features,
+    simplex_feature_order,
+):
+    """Resolve optional per-feature settings against the encoder defaults."""
+    defaults = {
+        "radius": radius,
+        "distance": distance,
+        "connector": connector,
+        "sigma": sigma,
+        "use_simplex_features": use_simplex_features,
+        "simplex_feature_order": simplex_feature_order,
+    }
+    if parameters is None:
+        parameter_sets = [defaults]
+    else:
+        if isinstance(parameters, (str, bytes)) or not isinstance(parameters, (list, tuple)):
+            raise TypeError("parameters must be a list or tuple of parameter dictionaries, or None.")
+        if not parameters:
+            raise ValueError("parameters must contain at least one parameter dictionary.")
+        parameter_sets = []
+        allowed = {
+            "radius", "distance", "connector", "sigma", "use_simplex_features",
+            "simplex_feature_order", "simplex_feature_max_order", "r", "d", "c",
+        }
+        aliases = {"r": "radius", "d": "distance", "c": "connector"}
+        for index, parameter_set in enumerate(parameters):
+            if not isinstance(parameter_set, dict):
+                raise TypeError(f"parameters[{index}] must be a dictionary.")
+            unknown = set(parameter_set) - allowed
+            if unknown:
+                raise ValueError(
+                    f"Unknown key(s) in parameters[{index}]: {sorted(unknown)!r}. "
+                    f"Supported keys are: {sorted(allowed)!r}."
+                )
+            config = defaults.copy()
+            for alias, canonical in aliases.items():
+                if alias in parameter_set and canonical in parameter_set:
+                    if parameter_set[alias] != parameter_set[canonical]:
+                        raise ValueError(
+                            f"Conflicting values for '{canonical}' and '{alias}' "
+                            f"in parameters[{index}]."
+                        )
+                elif alias in parameter_set:
+                    config[canonical] = parameter_set[alias]
+            for key in ("radius", "distance", "connector", "sigma", "use_simplex_features"):
+                if key in parameter_set:
+                    config[key] = parameter_set[key]
+
+            if (
+                "simplex_feature_order" in parameter_set
+                and "simplex_feature_max_order" in parameter_set
+                and parameter_set["simplex_feature_order"] != parameter_set["simplex_feature_max_order"]
+            ):
+                raise ValueError(
+                    f"Conflicting simplex feature order values in parameters[{index}]."
+                )
+            if "simplex_feature_order" in parameter_set:
+                config["simplex_feature_order"] = parameter_set["simplex_feature_order"]
+            elif "simplex_feature_max_order" in parameter_set:
+                config["simplex_feature_order"] = parameter_set["simplex_feature_max_order"]
+            parameter_sets.append(config)
+
+    for index, config in enumerate(parameter_sets):
+        for key in ("radius", "distance", "connector", "simplex_feature_order"):
+            _inclusive_parameter_bounds(config[key], f"parameters[{index}].{key}")
+        if not isinstance(config["use_simplex_features"], (bool, np.bool_)):
+            raise ValueError(f"parameters[{index}].use_simplex_features must be a boolean.")
+        value = config["sigma"]
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not math.isfinite(float(value))
+            or value <= 0
+        ):
+            raise ValueError(f"parameters[{index}].sigma must be None or a finite positive number.")
+    return tuple(parameter_sets)
+
+
+_PARAMETER_ALIASES = {
+    "r": "radius",
+    "d": "distance",
+    "c": "connector",
+    "simplex_feature_max_order": "simplex_feature_order",
+}
+
+
+class _SimplexFeatureOrderAliasMixin:
+    @property
+    def simplex_feature_max_order(self):
+        """Legacy alias for ``simplex_feature_order``."""
+        return self.simplex_feature_order
+
+    @simplex_feature_max_order.setter
+    def simplex_feature_max_order(self, value):
+        self.simplex_feature_order = value
 
 
 def _normalize_parameter_aliases(params):
@@ -556,104 +664,40 @@ def _ensure_simplex_edge_cache(graph):
         return structural_cache['simplex_edges_by_pair']
 
     strategy = graph.graph['_hash_strategy']
+    edge_triplet_hashes = structural_cache['edge_triplet_hashes']
     edges_by_pair = defaultdict(list)
-    for u, v, _, data in strategy.edge_records(graph):
+    for u, v, key, _ in strategy.edge_records(graph):
         if u == v:
             continue
-        edge_label = _hash(data['label'])
-        if strategy.directed:
-            edges_by_pair[frozenset((u, v))].append((u, v, edge_label))
-        else:
-            edges_by_pair[frozenset((u, v))].append(edge_label)
+        edge_id = strategy.edge_id(graph, u, v, key)
+        edges_by_pair[frozenset((u, v))].append(edge_triplet_hashes[edge_id])
     structural_cache['simplex_edges_by_pair'] = edges_by_pair
     return edges_by_pair
 
 
 def _simplex_fragment_hash(graph, simplex_nodes):
-    """Return a node-ID-independent hash for one labeled simplex fragment."""
-    strategy = graph.graph['_hash_strategy']
+    """Hash a singleton by label, or a higher simplex by its edge hashes."""
     simplex_nodes = tuple(simplex_nodes)
-    node_labels = {
-        node: _hash(graph.nodes[node]['label'])
-        for node in simplex_nodes
-    }
+    if len(simplex_nodes) == 1:
+        return graph.graph['_structural_cache']['node_label_hashes'][simplex_nodes[0]]
+
     edges_by_pair = _ensure_simplex_edge_cache(graph)
-    colors = dict(node_labels)
-    for _ in range(len(simplex_nodes)):
-        signatures = {}
-        for node in simplex_nodes:
-            neighborhood_patterns = []
-            for neighbor in simplex_nodes:
-                if neighbor == node:
-                    continue
-                pair_edges = edges_by_pair[frozenset((node, neighbor))]
-                if strategy.directed:
-                    neighborhood_patterns.extend(
-                        (
-                            'out' if source == node else 'in',
-                            edge_label,
-                            colors[neighbor],
-                        )
-                        for source, _, edge_label in pair_edges
-                    )
-                else:
-                    neighborhood_patterns.extend(
-                        ('edge', edge_label, colors[neighbor])
-                        for edge_label in pair_edges
-                    )
-            signatures[node] = (
-                node_labels[node],
-                tuple(sorted(neighborhood_patterns)),
-            )
-        color_ids = {
-            signature: color_id
-            for color_id, signature in enumerate(sorted(set(signatures.values())))
-        }
-        colors = {node: color_ids[signatures[node]] for node in simplex_nodes}
-
-    color_classes = defaultdict(list)
-    for node in simplex_nodes:
-        color_classes[colors[node]].append(node)
-    permutation_groups = [
-        tuple(permutations(color_classes[color]))
-        for color in sorted(color_classes)
-    ]
-    canonical_forms = []
-    for group_orderings in product(*permutation_groups):
-        ordering = tuple(
-            node
-            for group_ordering in group_orderings
-            for node in group_ordering
-        )
-        pair_patterns = []
-        for left_idx, left in enumerate(ordering):
-            for right_idx in range(left_idx + 1, len(ordering)):
-                right = ordering[right_idx]
-                pair_edges = edges_by_pair[frozenset((left, right))]
-                if strategy.directed:
-                    edge_patterns = tuple(sorted(
-                        (
-                            'forward' if source == left else 'reverse',
-                            edge_label,
-                        )
-                        for source, _, edge_label in pair_edges
-                    ))
-                else:
-                    edge_patterns = tuple(sorted(pair_edges))
-                pair_patterns.append((left_idx, right_idx, edge_patterns))
-        canonical_forms.append((
-            tuple(node_labels[node] for node in ordering),
-            tuple(pair_patterns),
-        ))
-    canonical_form = min(canonical_forms)
-    return hash_sequence(('simplex', len(simplex_nodes) - 1, canonical_form))
+    return hash_set(
+        edge_hash
+        for index, left in enumerate(simplex_nodes)
+        for right in simplex_nodes[index + 1:]
+        for edge_hash in edges_by_pair[frozenset((left, right))]
+    )
 
 
-def _simplex_fragments(graph, source_node_ids, max_order):
+def _simplex_fragments(graph, source_node_ids, simplex_feature_order):
     """Enumerate and cache all simplex fragments in one induced region."""
     source_node_ids = frozenset(source_node_ids)
+    order_min, order_max = _inclusive_parameter_bounds(
+        simplex_feature_order, "simplex_feature_order"
+    )
     cache = graph.graph.get('_structural_cache', {}).get('simplex_fragments', {})
-    cache_key = (source_node_ids, max_order)
+    cache_key = (source_node_ids, order_min, order_max)
     if cache_key in cache:
         return cache[cache_key]
 
@@ -663,9 +707,10 @@ def _simplex_fragments(graph, source_node_ids, max_order):
     simple_region.remove_edges_from(nx.selfloop_edges(simple_region))
     fragments = []
     node_order = graph.graph['_structural_cache']['node_order']
-    for clique in _bounded_cliques(simple_region, max_order, node_order):
+    for clique in _bounded_cliques(simple_region, order_max, node_order):
         order = len(clique) - 1
-        fragments.append((order, _simplex_fragment_hash(graph, clique), tuple(clique)))
+        if order >= order_min:
+            fragments.append((order, _simplex_fragment_hash(graph, clique), tuple(clique)))
 
     fragments = tuple(fragments)
     cache[cache_key] = fragments
@@ -967,7 +1012,7 @@ def _connector_provenance(
 
 def _process_node_features(
     node_idx, graph, radius, distance, connector, nbits, sigma, accumulator,
-    use_simplex_features=False, simplex_feature_max_order=2,
+    use_simplex_features=False, simplex_feature_order=2,
     archive_collector=None,
 ):
     # Weighted: inline computation of weight using the Gaussian function.
@@ -1037,10 +1082,10 @@ def _process_node_features(
                     union_of_shortest_paths, union_path_edges, provenance_by_connect = (
                         target_connector_data
                     )
-                root_label_pair = tuple(sorted((
+                root_label_pair_hash = hash_set((
                     structural_cache['node_label_hashes'][node_idx],
                     structural_cache['node_label_hashes'][curr_node_idx],
-                )))
+                )) if use_simplex_features and dist > 0 else None
                 for connect in connector_values:
                     if (
                         use_simplex_features
@@ -1051,12 +1096,11 @@ def _process_node_features(
                         union_nodes = _expanded_path_union_nodes(
                             graph, union_of_shortest_paths, connect
                         )
-                        for simplex_order, simplex_hash, simplex_nodes in _simplex_fragments(
-                            graph, union_nodes, simplex_feature_max_order
+                        for _, simplex_hash, simplex_nodes in _simplex_fragments(
+                            graph, union_nodes, simplex_feature_order
                         ):
                             raw_signature = hash_sequence((
-                                'simplex-path-union', dist, root_label_pair,
-                                simplex_order, simplex_hash,
+                                root_label_pair_hash, dist, connect, simplex_hash,
                             ))
                             feature_code = hash_value(raw_signature, nbits=nbits)
                             accumulator.add(feature_code, w)
@@ -1077,13 +1121,12 @@ def _process_node_features(
 
                     if use_simplex_features and connect == 0 and dist == 0:
                         single_region = _node_ball(graph, node_idx, radius_i)
-                        for simplex_order, simplex_hash, simplex_nodes in _simplex_fragments(
-                            graph, single_region, simplex_feature_max_order
+                        root_label_hash = structural_cache['node_label_hashes'][node_idx]
+                        for _, simplex_hash, simplex_nodes in _simplex_fragments(
+                            graph, single_region, simplex_feature_order
                         ):
                             raw_simplex_signature = hash_sequence((
-                                'simplex-neighborhood-single', dist,
-                                root_label_pair,
-                                radius_i, simplex_order, simplex_hash,
+                                root_label_hash, radius_i, simplex_hash,
                             ))
                             feature_code = hash_value(raw_simplex_signature, nbits=nbits)
                             accumulator.add(feature_code, w)
@@ -1105,40 +1148,43 @@ def _process_node_features(
                             first_region = _node_ball(graph, node_idx, radius_i)
                             second_region = _node_ball(graph, curr_node_idx, radius_j)
                             first_fragments = _simplex_fragments(
-                                graph, first_region, simplex_feature_max_order
+                                graph, first_region, simplex_feature_order
                             )
                             second_fragments = _simplex_fragments(
-                                graph, second_region, simplex_feature_max_order
+                                graph, second_region, simplex_feature_order
                             )
-                            for first_order, first_hash, first_nodes in first_fragments:
-                                for second_order, second_hash, second_nodes in second_fragments:
-                                    fragment_pair = tuple(sorted((
-                                        (first_order, first_hash),
-                                        (second_order, second_hash),
-                                    )))
-                                    raw_simplex_signature = hash_sequence((
-                                        'simplex-neighborhood-pair', dist,
-                                        root_label_pair, fragment_pair,
-                                    ))
-                                    feature_code = hash_value(
-                                        raw_simplex_signature, nbits=nbits
+                            fragments_by_nodes = {
+                                frozenset(fragment_nodes): (fragment_hash, fragment_nodes)
+                                for _, fragment_hash, fragment_nodes in first_fragments
+                            }
+                            for _, fragment_hash, fragment_nodes in second_fragments:
+                                fragments_by_nodes.setdefault(
+                                    frozenset(fragment_nodes),
+                                    (fragment_hash, fragment_nodes),
+                                )
+
+                            for simplex_hash, simplex_nodes in fragments_by_nodes.values():
+                                raw_simplex_signature = hash_sequence((
+                                    root_label_pair_hash, dist, simplex_hash,
+                                ))
+                                feature_code = hash_value(
+                                    raw_simplex_signature, nbits=nbits
+                                )
+                                accumulator.add(feature_code, w)
+                                if archive_collector is not None:
+                                    source_node_ids = set(simplex_nodes)
+                                    source_edge_ids = _simplex_fragment_edge_ids(
+                                        graph, simplex_nodes
                                     )
-                                    accumulator.add(feature_code, w)
-                                    if archive_collector is not None:
-                                        source_node_ids = set(first_nodes) | set(second_nodes)
-                                        source_edge_ids = (
-                                            _simplex_fragment_edge_ids(graph, first_nodes)
-                                            | _simplex_fragment_edge_ids(graph, second_nodes)
-                                        )
-                                        archive_collector.add(
-                                            feature_id=feature_code,
-                                            raw_signature=raw_simplex_signature,
-                                            feature_kind='simplex_neighborhood_pair',
-                                            root_node=node_idx,
-                                            target_node=curr_node_idx,
-                                            source_node_ids=source_node_ids,
-                                            source_edge_ids=source_edge_ids,
-                                        )
+                                    archive_collector.add(
+                                        feature_id=feature_code,
+                                        raw_signature=raw_simplex_signature,
+                                        feature_kind='simplex_neighborhood_pair',
+                                        root_node=node_idx,
+                                        target_node=curr_node_idx,
+                                        source_node_ids=source_node_ids,
+                                        source_edge_ids=source_edge_ids,
+                                    )
                         if connect == 0:
                             raw_signature = hash_sequence((code_i, dist, code_j))
                         else:
@@ -1174,15 +1220,31 @@ def _process_node_features(
 def get_structural_node_vectors(
     original_graph, radius, distance, connector, nbits, degree_threshold=None,
     sigma=None, use_simplex_features=False, graph_strategy=None,
-    simplex_feature_max_order=2, root_node_ids=None,
+    simplex_feature_order=2, root_node_ids=None, simplex_feature_max_order=None,
+    parameters=None,
 ):
     """
     Generates a feature vector for each node in the graph.
     Uses an unweighted (faster) version if sigma is None, in which the weight is inlined as 1.0.
     If sigma is provided, the Gaussian weighted variant is used.
     """
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
+    parameter_sets = _normalize_feature_parameter_sets(
+        parameters,
+        radius=radius,
+        distance=distance,
+        connector=connector,
+        sigma=sigma,
+        use_simplex_features=use_simplex_features,
+        simplex_feature_order=simplex_feature_order,
+    )
+    prepare_radius = max(_inclusive_parameter_bounds(config['radius'], 'radius')[1] for config in parameter_sets)
+    prepare_distance = max(_inclusive_parameter_bounds(config['distance'], 'distance')[1] for config in parameter_sets)
+    prepare_connector = max(_inclusive_parameter_bounds(config['connector'], 'connector')[1] for config in parameter_sets)
     graph = _prepare_structural_graph(
-        original_graph, radius, distance, connector, degree_threshold,
+        original_graph, prepare_radius, prepare_distance, prepare_connector, degree_threshold,
         graph_strategy=graph_strategy,
     )
     n_nodes = graph.number_of_nodes()
@@ -1191,14 +1253,17 @@ def get_structural_node_vectors(
     cols = []
     data = []
     selected_roots = _normalize_root_node_ids([graph], [root_node_ids])[0]
-    if sigma is None:
+    use_weighted_accumulator = any(config['sigma'] is not None for config in parameter_sets)
+    if not use_weighted_accumulator:
         for row_idx, node_idx in enumerate(graph.nodes()):
             accumulator = ListAccumulator()
             if selected_roots is None or node_idx in selected_roots:
-                _process_node_features(
-                    node_idx, graph, radius, distance, connector, nbits, sigma, accumulator,
-                    use_simplex_features, simplex_feature_max_order,
-                )
+                for config in parameter_sets:
+                    _process_node_features(
+                        node_idx, graph, config['radius'], config['distance'],
+                        config['connector'], nbits, config['sigma'], accumulator,
+                        config['use_simplex_features'], config['simplex_feature_order'],
+                    )
             row_entries = Counter(accumulator.get())
             row_entries[0] = 1
             row_entries[1] = graph.degree[node_idx]
@@ -1207,29 +1272,47 @@ def get_structural_node_vectors(
         for row_idx, node_idx in enumerate(graph.nodes()):
             accumulator = DictAccumulator()
             if selected_roots is None or node_idx in selected_roots:
-                _process_node_features(
-                    node_idx, graph, radius, distance, connector, nbits, sigma, accumulator,
-                    use_simplex_features, simplex_feature_max_order,
-                )
+                for config in parameter_sets:
+                    _process_node_features(
+                        node_idx, graph, config['radius'], config['distance'],
+                        config['connector'], nbits, config['sigma'], accumulator,
+                        config['use_simplex_features'], config['simplex_feature_order'],
+                    )
             row_entries = dict(accumulator.get())
             row_entries[0] = 1.0
             row_entries[1] = float(graph.degree[node_idx])
             _append_sparse_row_entries(row_entries, row_idx, rows, cols, data)
 
-    dtype = float if sigma is not None else int
+    dtype = float if use_weighted_accumulator else int
     return csr_matrix((data, (rows, cols)), shape=(n_nodes, n_features), dtype=dtype)
 
 
 def get_feature_archive(
     original_graph, graph_index, radius, distance, connector, nbits,
     degree_threshold=None, sigma=None, use_simplex_features=False,
-    graph_strategy=None, simplex_feature_max_order=2,
+    graph_strategy=None, simplex_feature_order=2, simplex_feature_max_order=None,
+    parameters=None,
 ):
     """
     Replays the structural hashing path and archives all occurrences per final hashed feature id.
     """
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
+    parameter_sets = _normalize_feature_parameter_sets(
+        parameters,
+        radius=radius,
+        distance=distance,
+        connector=connector,
+        sigma=sigma,
+        use_simplex_features=use_simplex_features,
+        simplex_feature_order=simplex_feature_order,
+    )
+    prepare_radius = max(_inclusive_parameter_bounds(config['radius'], 'radius')[1] for config in parameter_sets)
+    prepare_distance = max(_inclusive_parameter_bounds(config['distance'], 'distance')[1] for config in parameter_sets)
+    prepare_connector = max(_inclusive_parameter_bounds(config['connector'], 'connector')[1] for config in parameter_sets)
     graph = _prepare_structural_graph(
-        original_graph, radius, distance, connector, degree_threshold,
+        original_graph, prepare_radius, prepare_distance, prepare_connector, degree_threshold,
         graph_strategy=graph_strategy,
     )
     archive_collector = _FeatureArchiveCollector(
@@ -1237,20 +1320,25 @@ def get_feature_archive(
     )
 
     for node_idx in graph.nodes():
-        accumulator = DictAccumulator() if sigma is not None else ListAccumulator()
-        _process_node_features(
-            node_idx,
-            graph,
-            radius,
-            distance,
-            connector,
-            nbits,
-            sigma,
-            accumulator,
-            use_simplex_features,
-            simplex_feature_max_order,
-            archive_collector=archive_collector,
+        accumulator = (
+            DictAccumulator()
+            if any(config['sigma'] is not None for config in parameter_sets)
+            else ListAccumulator()
         )
+        for config in parameter_sets:
+            _process_node_features(
+                node_idx,
+                graph,
+                config['radius'],
+                config['distance'],
+                config['connector'],
+                nbits,
+                config['sigma'],
+                accumulator,
+                config['use_simplex_features'],
+                config['simplex_feature_order'],
+                archive_collector=archive_collector,
+            )
 
     return archive_collector.archive
 
@@ -1323,7 +1411,7 @@ def reweight_edge_vectors_mtx(edge_vectors_mtx, original_graph, weight_key):
     return csr_matrix(edge_vectors_mtx)
 
 
-def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, add_structural_node_information=True, sigma=None, use_simplex_features=False, structural_node_vectors_mtx=None, graph_strategy=None, simplex_feature_max_order=2, root_node_ids=None):
+def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, add_structural_node_information=True, sigma=None, use_simplex_features=False, structural_node_vectors_mtx=None, graph_strategy=None, simplex_feature_order=2, root_node_ids=None, simplex_feature_max_order=None, parameters=None):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -1340,12 +1428,15 @@ def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_
     Returns:
         scipy.sparse.csr_matrix: The sparse feature matrix representing the graph.
     """
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
     node_vectors_mtx = structural_node_vectors_mtx
     if node_vectors_mtx is None:
         node_vectors_mtx = get_structural_node_vectors(
             original_graph, radius, distance, connector, nbits, degree_threshold,
             sigma, use_simplex_features, graph_strategy,
-            simplex_feature_max_order, root_node_ids,
+            simplex_feature_order, root_node_ids, parameters=parameters,
         )
     if weight_key is not None:
         node_vectors_mtx = reweight_node_vectors_mtx(node_vectors_mtx, original_graph, weight_key)
@@ -1363,14 +1454,18 @@ def get_node_vectors(original_graph, radius, distance, connector, nbits, weight_
 def get_structural_edge_vectors(original_graph, radius, distance, connector, nbits,
                                 degree_threshold=None, sigma=None, use_simplex_features=False,
                                 node_vectors_mtx=None, graph_strategy=None,
-                                simplex_feature_max_order=2):
+                                simplex_feature_order=2,
+                                simplex_feature_max_order=None, parameters=None):
     """Build one structural feature row per undirected edge by summing endpoint rows."""
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
     strategy = graph_strategy or _select_graph_hash_strategy((original_graph,))
     if node_vectors_mtx is None:
         node_vectors_mtx = get_structural_node_vectors(
             original_graph, radius, distance, connector, nbits, degree_threshold, sigma,
             use_simplex_features, strategy,
-            simplex_feature_max_order,
+            simplex_feature_order, parameters=parameters,
         )
     node_idxs = list(original_graph.nodes())
     node_to_row = {node_idx: row_idx for row_idx, node_idx in enumerate(node_idxs)}
@@ -1387,13 +1482,17 @@ def get_structural_edge_vectors(original_graph, radius, distance, connector, nbi
 def get_edge_vectors(original_graph, radius, distance, connector, nbits,
                      edge_attribute_key=None, degree_threshold=None, sigma=None,
                      use_simplex_features=False, edge_attribute_width=None,
-                     graph_strategy=None, simplex_feature_max_order=2):
+                     graph_strategy=None, simplex_feature_order=2,
+                     simplex_feature_max_order=None, parameters=None):
     """Generate one feature row per edge, aligned with ``graph.edges()`` order."""
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
     graph_strategy = graph_strategy or _select_graph_hash_strategy((original_graph,))
     edge_vectors_mtx = get_structural_edge_vectors(
         original_graph, radius, distance, connector, nbits, degree_threshold,
         sigma, use_simplex_features, graph_strategy=graph_strategy,
-        simplex_feature_max_order=simplex_feature_max_order,
+        simplex_feature_order=simplex_feature_order, parameters=parameters,
     )
     if edge_attribute_key is None:
         return edge_vectors_mtx
@@ -1420,13 +1519,17 @@ def get_edge_graph_vector(original_graph, radius, distance, connector, nbits,
                          edge_attribute_key, degree_threshold=None, sigma=None,
                          use_simplex_features=False, edge_attribute_width=None,
                          node_vectors_mtx=None, graph_strategy=None,
-                         simplex_feature_max_order=2):
+                         simplex_feature_order=2, simplex_feature_max_order=None,
+                         parameters=None):
     """Aggregate structural edge rows through their continuous attributes."""
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
     graph_strategy = graph_strategy or _select_graph_hash_strategy((original_graph,))
     edge_structural_mtx = get_structural_edge_vectors(
         original_graph, radius, distance, connector, nbits, degree_threshold,
         sigma, use_simplex_features, node_vectors_mtx, graph_strategy,
-        simplex_feature_max_order,
+        simplex_feature_order, parameters=parameters,
     )
     attribute_mtx = get_edge_attribute_mtx(original_graph, edge_attribute_key)
     if attribute_mtx.shape[1] == 0 and edge_attribute_width:
@@ -1436,7 +1539,7 @@ def get_edge_graph_vector(original_graph, radius, distance, connector, nbits,
     return csr_matrix(attribute_mtx.T.dot(edge_structural_mtx.toarray()).reshape(1, -1))
 
 
-def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_key=None, edge_attribute_width=None, graph_strategy=None, simplex_feature_max_order=2, root_node_ids=None):
+def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_key=None, edge_attribute_width=None, graph_strategy=None, simplex_feature_order=2, root_node_ids=None, simplex_feature_max_order=None, parameters=None):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -1453,11 +1556,14 @@ def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, w
     Returns:
         scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
     """
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
     graph_strategy = graph_strategy or _select_graph_hash_strategy((original_graph,))
     node_vectors_mtx = get_structural_node_vectors(
         original_graph, radius, distance, connector, nbits, degree_threshold,
         sigma, use_simplex_features, graph_strategy,
-        simplex_feature_max_order, root_node_ids,
+        simplex_feature_order, root_node_ids, parameters=parameters,
     )
     node_vectors_mtx = node_vectors_mtx.todense().A
     attribute_node_vectors_mtx = get_node_vectors(
@@ -1466,8 +1572,9 @@ def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, w
         sigma=sigma, use_simplex_features=use_simplex_features,
         structural_node_vectors_mtx=sp.sparse.csr_matrix(node_vectors_mtx),
         graph_strategy=graph_strategy,
-        simplex_feature_max_order=simplex_feature_max_order,
+        simplex_feature_order=simplex_feature_order,
         root_node_ids=root_node_ids,
+        parameters=parameters,
     )
     vector_ = attribute_node_vectors_mtx.T.dot(node_vectors_mtx)
     if edge_attribute_key is not None:
@@ -1477,7 +1584,8 @@ def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, w
             edge_attribute_width,
             node_vectors_mtx=sp.sparse.csr_matrix(node_vectors_mtx),
             graph_strategy=graph_strategy,
-            simplex_feature_max_order=simplex_feature_max_order,
+            simplex_feature_order=simplex_feature_order,
+            parameters=parameters,
         )
         vector_ = np.hstack([
             np.asarray(vector_).reshape(1, -1),
@@ -1489,7 +1597,7 @@ def get_node_graph_vectors(original_graph, radius, distance, connector, nbits, w
     return csr_matrix(vector)
 
 
-def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_width=None, graph_strategy=None, simplex_feature_max_order=2, root_node_ids=None):
+def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_width=None, graph_strategy=None, simplex_feature_order=2, root_node_ids=None, simplex_feature_max_order=None, parameters=None):
     """
     Generates a feature vector for a single graph based on node and subgraph hashes.
 
@@ -1506,11 +1614,14 @@ def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_
     Returns:
         scipy.sparse.csr_matrix: The sparse feature vector representing the graph.
     """
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
     graph_strategy = graph_strategy or _select_graph_hash_strategy((original_graph,))
     structural_node_vectors_mtx = get_structural_node_vectors(
         original_graph, radius, distance, connector, nbits, degree_threshold,
         sigma, use_simplex_features, graph_strategy,
-        simplex_feature_max_order, root_node_ids,
+        simplex_feature_order, root_node_ids, parameters=parameters,
     )
     node_vectors_mtx = structural_node_vectors_mtx
     if weight_key is not None:
@@ -1530,7 +1641,7 @@ def get_graph_vector(original_graph, radius, distance, connector, nbits, weight_
         original_graph, radius, distance, connector, nbits, edge_attribute_key,
         degree_threshold, sigma, use_simplex_features, edge_attribute_width,
         structural_node_vectors_mtx, graph_strategy,
-        simplex_feature_max_order,
+        simplex_feature_order, parameters=parameters,
     )
     return sp.sparse.hstack([node_graph_vector, edge_graph_vector], format="csr")
 
@@ -1550,7 +1661,7 @@ def split_into_chunks(lst, n):
     return [lst[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n)]
 
 
-def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_width=None, simplex_feature_max_order=2, root_node_ids=None):
+def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, edge_attribute_width=None, simplex_feature_order=2, root_node_ids=None, simplex_feature_max_order=None, parameters=None):
     """
     Encodes a list of graphs into a sparse matrix of feature vectors.
 
@@ -1568,6 +1679,9 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
     Returns:
         scipy.sparse.csr_matrix: The sparse matrix where each row is a graph's feature vector.
     """
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
     graphs = list(graphs)
     root_node_ids = _normalize_root_node_ids(graphs, root_node_ids)
     strategy = _select_graph_hash_strategy(graphs)
@@ -1579,7 +1693,7 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
     if parallel and len(graphs) >= parallel_threshold:
         def process_subset(indexed_subset):
             return [
-                get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_simplex_features, edge_attribute_width, strategy, simplex_feature_max_order, selected_roots)
+                get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_simplex_features, edge_attribute_width, strategy, simplex_feature_order, selected_roots, parameters=parameters)
                 for graph, selected_roots in indexed_subset
             ]
 
@@ -1589,7 +1703,7 @@ def paired_graphs_vector_encoder(graphs, radius, distance, connector, nbits, par
         graph_vectors = [vec for subset in graph_vectors_subsets for vec in subset]
     else:
         graph_vectors = [
-            get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_simplex_features, edge_attribute_width, strategy, simplex_feature_max_order, selected_roots)
+            get_graph_vector(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, edge_attribute_key, degree_threshold, sigma, use_simplex_features, edge_attribute_width, strategy, simplex_feature_order, selected_roots, parameters=parameters)
             for graph, selected_roots in zip(graphs, root_node_ids)
         ]
 
@@ -1602,8 +1716,10 @@ def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits
                                      degree_threshold=None, sigma=None,
                                      use_simplex_features=False,
                                      edge_attribute_width=None,
-                                     simplex_feature_max_order=2,
-                                     root_node_ids=None):
+                                     simplex_feature_order=2,
+                                     root_node_ids=None,
+                                     simplex_feature_max_order=None,
+                                     parameters=None):
     """
     Encodes a list of graphs into a sparse matrix of feature vectors.
 
@@ -1621,6 +1737,9 @@ def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits
     Returns:
         scipy.sparse.csr_matrix: The sparse matrix where each row is a graph's feature vector.
     """
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
     graphs = list(graphs)
     root_node_ids = _normalize_root_node_ids(graphs, root_node_ids)
     strategy = _select_graph_hash_strategy(graphs)
@@ -1629,7 +1748,7 @@ def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits
     if parallel and len(graphs) > n_cpus:
         def process_subset(indexed_subset):
             return [
-                get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, edge_attribute_key=edge_attribute_key, edge_attribute_width=edge_attribute_width, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order, root_node_ids=selected_roots)
+                get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, edge_attribute_key=edge_attribute_key, edge_attribute_width=edge_attribute_width, graph_strategy=strategy, simplex_feature_order=simplex_feature_order, root_node_ids=selected_roots, parameters=parameters)
                 for graph, selected_roots in indexed_subset
             ]
 
@@ -1639,14 +1758,14 @@ def paired_node_graphs_vector_encoder(graphs, radius, distance, connector, nbits
         graph_vectors = [vec for subset in graph_vectors_subsets for vec in subset]
     else:
         graph_vectors = [
-            get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, edge_attribute_key=edge_attribute_key, edge_attribute_width=edge_attribute_width, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order, root_node_ids=selected_roots)
+            get_node_graph_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, edge_attribute_key=edge_attribute_key, edge_attribute_width=edge_attribute_width, graph_strategy=strategy, simplex_feature_order=simplex_feature_order, root_node_ids=selected_roots, parameters=parameters)
             for graph, selected_roots in zip(graphs, root_node_ids)
         ]
 
     return sp.sparse.vstack(graph_vectors)
 
 
-def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, simplex_feature_max_order=2, root_node_ids=None):
+def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, parallel=True, weight_key=None, node_attribute_key=None, edge_attribute_key=None, degree_threshold=None, sigma=None, use_simplex_features=False, simplex_feature_order=2, root_node_ids=None, simplex_feature_max_order=None, parameters=None):
     """
     Encodes a list of graphs into node feature vectors.
 
@@ -1664,6 +1783,9 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
     Returns:
         list of scipy.sparse.csr_matrix: A list where each element is a matrix of node vectors for a graph.
     """
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
     graphs = list(graphs)
     root_node_ids = _normalize_root_node_ids(graphs, root_node_ids)
     strategy = _select_graph_hash_strategy(graphs)
@@ -1672,7 +1794,7 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
     if parallel and len(graphs) > n_cpus:
         def process_subset(indexed_subset):
             return [
-                get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order, root_node_ids=selected_roots)
+                get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, graph_strategy=strategy, simplex_feature_order=simplex_feature_order, root_node_ids=selected_roots, parameters=parameters)
                 for graph, selected_roots in indexed_subset
             ]
 
@@ -1682,7 +1804,7 @@ def paired_node_vector_encoder(graphs, radius, distance, connector, nbits, paral
         graph_node_vectors = [vec for subset in graph_node_vectors_subsets for vec in subset]
     else:
         graph_node_vectors = [
-            get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, graph_strategy=strategy, simplex_feature_max_order=simplex_feature_max_order, root_node_ids=selected_roots)
+            get_node_vectors(graph, radius, distance, connector, nbits, weight_key, node_attribute_key, degree_threshold, sigma=sigma, use_simplex_features=use_simplex_features, graph_strategy=strategy, simplex_feature_order=simplex_feature_order, root_node_ids=selected_roots, parameters=parameters)
             for graph, selected_roots in zip(graphs, root_node_ids)
         ]
 
@@ -1693,7 +1815,12 @@ def paired_edge_vector_encoder(graphs, radius, distance, connector, nbits,
                                parallel=True, edge_attribute_key=None,
                                degree_threshold=None, sigma=None,
                                use_simplex_features=False, edge_attribute_width=None,
-                               simplex_feature_max_order=2):
+                               simplex_feature_order=2,
+                               simplex_feature_max_order=None,
+                               parameters=None):
+    simplex_feature_order = _resolve_simplex_feature_order(
+        simplex_feature_order, simplex_feature_max_order
+    )
     """Encode each graph as a list of edge feature matrices."""
     graphs = list(graphs)
     strategy = _select_graph_hash_strategy(graphs)
@@ -1707,7 +1834,8 @@ def paired_edge_vector_encoder(graphs, radius, distance, connector, nbits,
                 use_simplex_features=use_simplex_features,
                 edge_attribute_width=edge_attribute_width,
                 graph_strategy=strategy,
-                simplex_feature_max_order=simplex_feature_max_order,
+                simplex_feature_order=simplex_feature_order,
+                parameters=parameters,
             )
             for graph in subset
         ]
@@ -1722,7 +1850,7 @@ def paired_edge_vector_encoder(graphs, radius, distance, connector, nbits,
     return edge_matrices
 
 
-class BaseNSPPK(BaseEstimator, TransformerMixin):
+class BaseNSPPK(_SimplexFeatureOrderAliasMixin, BaseEstimator, TransformerMixin):
     """
     BaseNSPPK is an abstract base class for encoding graphs into feature vectors.
 
@@ -1755,7 +1883,11 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
                  node_attribute_key=None, edge_attribute_key=None, attribute_dim=None,
                  attribute_alphabet_size=None, edge_attribute_dim=None,
                  edge_attribute_alphabet_size=None, use_node_kernel=False, sigma=None,
-                 use_simplex_features=False, simplex_feature_max_order=2):
+                 use_simplex_features=False, simplex_feature_order=2,
+                 simplex_feature_max_order=None, parameters=None):
+        simplex_feature_order = _resolve_simplex_feature_order(
+            simplex_feature_order, simplex_feature_max_order
+        )
         _validate_encoder_parameters(
             radius=radius,
             distance=distance,
@@ -1773,7 +1905,16 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
             sigma=sigma,
             use_node_kernel=use_node_kernel,
             use_simplex_features=use_simplex_features,
-            simplex_feature_max_order=simplex_feature_max_order,
+            simplex_feature_order=simplex_feature_order,
+        )
+        _normalize_feature_parameter_sets(
+            parameters,
+            radius=radius,
+            distance=distance,
+            connector=connector,
+            sigma=sigma,
+            use_simplex_features=use_simplex_features,
+            simplex_feature_order=simplex_feature_order,
         )
         self.embedder = embedder
         self.clustering_predictor = clustering_predictor
@@ -1798,7 +1939,8 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
         self.use_node_kernel = use_node_kernel
         self.sigma = sigma
         self.use_simplex_features = use_simplex_features
-        self.simplex_feature_max_order = simplex_feature_max_order
+        self.simplex_feature_order = simplex_feature_order
+        self.parameters = parameters
         self.is_fitted_ = not self.requires_fit()
 
     def __repr__(self):
@@ -2018,9 +2160,10 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
                 degree_threshold=self.degree_threshold,
                 sigma=self.sigma,
                 use_simplex_features=self.use_simplex_features,
-                simplex_feature_max_order=self.simplex_feature_max_order,
+                simplex_feature_order=self.simplex_feature_order,
                 edge_attribute_width=edge_attribute_width,
                 root_node_ids=root_node_ids,
+                parameters=self.parameters,
             )
         else:
             data_mtx = paired_graphs_vector_encoder(
@@ -2037,8 +2180,9 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
                 self.sigma,
                 self.use_simplex_features,
                 edge_attribute_width,
-                self.simplex_feature_max_order,
+                self.simplex_feature_order,
                 root_node_ids,
+                parameters=self.parameters,
             )
 
         if self.dense:
@@ -2046,7 +2190,7 @@ class BaseNSPPK(BaseEstimator, TransformerMixin):
 
         return data_mtx
 
-class NSPPK(BaseEstimator, TransformerMixin):
+class NSPPK(_SimplexFeatureOrderAliasMixin, BaseEstimator, TransformerMixin):
     """
     NSPPK (Neighborhood Subgraph Pairwise Propagation Kernel) class specialized from BaseNSPPK.
 
@@ -2074,11 +2218,15 @@ class NSPPK(BaseEstimator, TransformerMixin):
     def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None,
                  node_attribute_key=None, edge_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None,
                  edge_attribute_dim=None, edge_attribute_alphabet_size=None, use_node_kernel=False, sigma=None,
-                 use_simplex_features=False, simplex_feature_max_order=2,
-                 r=None, d=None, c=None):
+                 use_simplex_features=False, simplex_feature_order=2,
+                 r=None, d=None, c=None, simplex_feature_max_order=None,
+                 parameters=None):
         radius = _resolve_alias('radius', radius, 'r', r, 1)
         distance = _resolve_alias('distance', distance, 'd', d, 3)
         connector = _resolve_alias('connector', connector, 'c', c, 0)
+        simplex_feature_order = _resolve_simplex_feature_order(
+            simplex_feature_order, simplex_feature_max_order
+        )
         self.radius = radius
         self.distance = distance
         self.connector = connector
@@ -2096,7 +2244,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
         self.use_node_kernel = use_node_kernel
         self.sigma = sigma
         self.use_simplex_features = use_simplex_features
-        self.simplex_feature_max_order = simplex_feature_max_order
+        self.simplex_feature_order = simplex_feature_order
+        self.parameters = parameters
         self.r = radius
         self.d = distance
         self.c = connector
@@ -2163,7 +2312,8 @@ class NSPPK(BaseEstimator, TransformerMixin):
             use_node_kernel=self.use_node_kernel,
             sigma=self.sigma,
             use_simplex_features=self.use_simplex_features,
-            simplex_feature_max_order=self.simplex_feature_max_order,
+            simplex_feature_order=self.simplex_feature_order,
+            parameters=self.parameters,
         )
 
     def __repr__(self):
@@ -2173,7 +2323,7 @@ class NSPPK(BaseEstimator, TransformerMixin):
         Returns:
             str: The string representation.
         """
-        return f"{self.__class__.__name__}(radius={self.radius}, distance={self.distance}, connector={self.connector}, sigma={self.sigma}, use_simplex_features={self.use_simplex_features}, simplex_feature_max_order={self.simplex_feature_max_order}, " \
+        return f"{self.__class__.__name__}(radius={self.radius}, distance={self.distance}, connector={self.connector}, sigma={self.sigma}, use_simplex_features={self.use_simplex_features}, simplex_feature_order={self.simplex_feature_order}, " \
                f"nbits={self.nbits}, degree_threshold={self.degree_threshold}, dense={self.dense}, " \
                f"parallel={self.parallel}, weight_key={self.weight_key}, node_attribute_key={self.node_attribute_key}, " \
                f"attribute_dim={self.attribute_dim}, attribute_alphabet_size={self.attribute_alphabet_size}, " \
@@ -2325,7 +2475,9 @@ class NSPPK(BaseEstimator, TransformerMixin):
             'use_node_kernel': self.use_node_kernel,
             'sigma': self.sigma,
             'use_simplex_features': self.use_simplex_features,
-            'simplex_feature_max_order': self.simplex_feature_max_order,
+            'simplex_feature_order': self.simplex_feature_order,
+            'simplex_feature_max_order': self.simplex_feature_order,
+            'parameters': self.parameters,
         }
 
         if deep:
@@ -2427,7 +2579,16 @@ class NSPPK(BaseEstimator, TransformerMixin):
             sigma=candidate_params['sigma'],
             use_node_kernel=candidate_params['use_node_kernel'],
             use_simplex_features=candidate_params['use_simplex_features'],
-            simplex_feature_max_order=candidate_params['simplex_feature_max_order'],
+            simplex_feature_order=candidate_params['simplex_feature_order'],
+        )
+        _normalize_feature_parameter_sets(
+            candidate_params['parameters'],
+            radius=candidate_params['radius'],
+            distance=candidate_params['distance'],
+            connector=candidate_params['connector'],
+            sigma=candidate_params['sigma'],
+            use_simplex_features=candidate_params['use_simplex_features'],
+            simplex_feature_order=candidate_params['simplex_feature_order'],
         )
 
         # Set validated main parameters and reinitialize components if needed.
@@ -2477,13 +2638,13 @@ class NSPPK(BaseEstimator, TransformerMixin):
                 use_node_kernel=self.use_node_kernel,
                 sigma=self.sigma,
                 use_simplex_features=self.use_simplex_features,
-                simplex_feature_max_order=self.simplex_feature_max_order,
+                simplex_feature_order=self.simplex_feature_order,
             )
 
         return self
 
 
-class _NSPPKPredictor(BaseEstimator):
+class _NSPPKPredictor(_SimplexFeatureOrderAliasMixin, BaseEstimator):
     """Shared graph-vectorization and prediction implementation."""
 
     _task = None
@@ -2509,8 +2670,13 @@ class _NSPPKPredictor(BaseEstimator):
         use_node_kernel=False,
         sigma=None,
         use_simplex_features=False,
-        simplex_feature_max_order=2,
+        simplex_feature_order=2,
+        simplex_feature_max_order=None,
+        parameters=None,
     ):
+        simplex_feature_order = _resolve_simplex_feature_order(
+            simplex_feature_order, simplex_feature_max_order
+        )
         self.estimator = estimator
         self.estimator_params = estimator_params
         self.radius = radius
@@ -2530,7 +2696,8 @@ class _NSPPKPredictor(BaseEstimator):
         self.use_node_kernel = use_node_kernel
         self.sigma = sigma
         self.use_simplex_features = use_simplex_features
-        self.simplex_feature_max_order = simplex_feature_max_order
+        self.simplex_feature_order = simplex_feature_order
+        self.parameters = parameters
 
     def _make_estimator(self):
         estimator = self.estimator
@@ -2623,7 +2790,8 @@ class _NSPPKPredictor(BaseEstimator):
             use_node_kernel=self.use_node_kernel,
             sigma=self.sigma,
             use_simplex_features=self.use_simplex_features,
-            simplex_feature_max_order=self.simplex_feature_max_order,
+            simplex_feature_order=self.simplex_feature_order,
+            parameters=self.parameters,
         )
         encoder.fit(graphs, y)
         features = encoder.transform(graphs)
@@ -2677,7 +2845,7 @@ class NSPPKRegressor(RegressorMixin, _NSPPKPredictor):
     _task = "regressor"
 
 
-class NodeNSPPK(BaseEstimator, TransformerMixin):
+class NodeNSPPK(_SimplexFeatureOrderAliasMixin, BaseEstimator, TransformerMixin):
     """
     NodeNSPPK (Node Neighborhood Subgraph Pairwise Propagation Kernel) class compatible with scikit-learn's Transformer interface.
 
@@ -2702,10 +2870,13 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
     """
 
     def __init__(self, radius=1, distance=3, connector=0, nbits=10, degree_threshold=None, dense=True, parallel=True, weight_key=None,
-                 node_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, sigma=None, use_simplex_features=False, simplex_feature_max_order=2, r=None, d=None, c=None):
+                 node_attribute_key=None, attribute_dim=None, attribute_alphabet_size=None, sigma=None, use_simplex_features=False, simplex_feature_order=2, r=None, d=None, c=None, simplex_feature_max_order=None, parameters=None):
         radius = _resolve_alias('radius', radius, 'r', r, 1)
         distance = _resolve_alias('distance', distance, 'd', d, 3)
         connector = _resolve_alias('connector', connector, 'c', c, 0)
+        simplex_feature_order = _resolve_simplex_feature_order(
+            simplex_feature_order, simplex_feature_max_order
+        )
         self.nsppk = NSPPK(
             radius=radius,
             distance=distance,
@@ -2720,7 +2891,8 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             attribute_alphabet_size=attribute_alphabet_size,
             sigma=sigma,
             use_simplex_features=use_simplex_features,
-            simplex_feature_max_order=simplex_feature_max_order,
+            simplex_feature_order=simplex_feature_order,
+            parameters=parameters,
         )
         self.radius = radius
         self.distance = distance
@@ -2735,7 +2907,8 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
         self.attribute_alphabet_size = attribute_alphabet_size
         self.sigma = sigma
         self.use_simplex_features = use_simplex_features
-        self.simplex_feature_max_order = simplex_feature_max_order
+        self.simplex_feature_order = simplex_feature_order
+        self.parameters = parameters
         self.r = radius
         self.d = distance
         self.c = connector
@@ -2759,7 +2932,9 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             'attribute_alphabet_size': self.attribute_alphabet_size,
             'sigma': self.sigma,
             'use_simplex_features': self.use_simplex_features,
-            'simplex_feature_max_order': self.simplex_feature_max_order,
+            'simplex_feature_order': self.simplex_feature_order,
+            'simplex_feature_max_order': self.simplex_feature_order,
+            'parameters': self.parameters,
         }
 
     def set_params(self, **params):
@@ -2795,13 +2970,13 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             sigma=candidate['sigma'],
             use_node_kernel=False,
             use_simplex_features=candidate['use_simplex_features'],
-            simplex_feature_max_order=candidate['simplex_feature_max_order'],
+            simplex_feature_order=candidate['simplex_feature_order'],
         )
 
+        self.nsppk.set_params(**normalized)
         for key, value in normalized.items():
             setattr(self, key, value)
         self.r, self.d, self.c = self.radius, self.distance, self.connector
-        self.nsppk.set_params(**normalized)
         return self
 
     def set_nbits(self, nbits):
@@ -2957,8 +3132,9 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
             degree_threshold=self.nsppk.base_nsppk.degree_threshold,
             sigma=self.nsppk.sigma,
             use_simplex_features=self.nsppk.use_simplex_features,
-            simplex_feature_max_order=self.nsppk.simplex_feature_max_order,
+            simplex_feature_order=self.nsppk.simplex_feature_order,
             root_node_ids=root_node_ids,
+            parameters=self.nsppk.parameters,
         )
 
         if self.nsppk.base_nsppk.dense:
@@ -2967,18 +3143,22 @@ class NodeNSPPK(BaseEstimator, TransformerMixin):
         return nodes_data_mtx_list
 
 
-class EdgeNSPPK(BaseEstimator, TransformerMixin):
+class EdgeNSPPK(_SimplexFeatureOrderAliasMixin, BaseEstimator, TransformerMixin):
     """Return one feature row per undirected edge in each input graph."""
 
     def __init__(self, radius=1, distance=3, connector=0, nbits=10,
                  degree_threshold=None, dense=True, parallel=True,
                  edge_attribute_key=None, edge_attribute_dim=None,
                  edge_attribute_alphabet_size=None, sigma=None,
-                 use_simplex_features=False, simplex_feature_max_order=2,
-                 r=None, d=None, c=None):
+                 use_simplex_features=False, simplex_feature_order=2,
+                 r=None, d=None, c=None, simplex_feature_max_order=None,
+                 parameters=None):
         radius = _resolve_alias('radius', radius, 'r', r, 1)
         distance = _resolve_alias('distance', distance, 'd', d, 3)
         connector = _resolve_alias('connector', connector, 'c', c, 0)
+        simplex_feature_order = _resolve_simplex_feature_order(
+            simplex_feature_order, simplex_feature_max_order
+        )
         self.radius = radius
         self.distance = distance
         self.connector = connector
@@ -2991,7 +3171,8 @@ class EdgeNSPPK(BaseEstimator, TransformerMixin):
         self.edge_attribute_alphabet_size = edge_attribute_alphabet_size
         self.sigma = sigma
         self.use_simplex_features = use_simplex_features
-        self.simplex_feature_max_order = simplex_feature_max_order
+        self.simplex_feature_order = simplex_feature_order
+        self.parameters = parameters
         self.r, self.d, self.c = radius, distance, connector
         self.nsppk = NSPPK(
             radius=radius, distance=distance, connector=connector, nbits=nbits,
@@ -3000,7 +3181,8 @@ class EdgeNSPPK(BaseEstimator, TransformerMixin):
             edge_attribute_dim=edge_attribute_dim,
             edge_attribute_alphabet_size=edge_attribute_alphabet_size,
             sigma=sigma, use_simplex_features=use_simplex_features,
-            simplex_feature_max_order=simplex_feature_max_order,
+            simplex_feature_order=simplex_feature_order,
+            parameters=parameters,
         )
 
     def get_params(self, deep=True):
@@ -3020,7 +3202,9 @@ class EdgeNSPPK(BaseEstimator, TransformerMixin):
             'edge_attribute_alphabet_size': self.edge_attribute_alphabet_size,
             'sigma': self.sigma,
             'use_simplex_features': self.use_simplex_features,
-            'simplex_feature_max_order': self.simplex_feature_max_order,
+            'simplex_feature_order': self.simplex_feature_order,
+            'simplex_feature_max_order': self.simplex_feature_order,
+            'parameters': self.parameters,
         }
 
     def set_params(self, **params):
@@ -3070,7 +3254,8 @@ class EdgeNSPPK(BaseEstimator, TransformerMixin):
             sigma=base.sigma,
             use_simplex_features=base.use_simplex_features,
             edge_attribute_width=edge_attribute_width,
-            simplex_feature_max_order=base.simplex_feature_max_order,
+            simplex_feature_order=base.simplex_feature_order,
+            parameters=base.parameters,
         )
         if base.dense:
             edge_matrices = [matrix.toarray() for matrix in edge_matrices]

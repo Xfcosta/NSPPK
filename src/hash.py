@@ -26,17 +26,6 @@ def hash_set(iterable):
     return _hash(tuple_representation)
 
 
-def _hash_unordered_triplet(first, second, third):
-    """Hash three unordered values without allocating a sorted list."""
-    if first > second:
-        first, second = second, first
-    if second > third:
-        second, third = third, second
-    if first > second:
-        first, second = second, first
-    return _hash((first, second, third))
-
-
 def _node_hash_undirected_simple(node_idx, graph):
     uh = _hash(graph.nodes[node_idx]['label'])
     incident_patterns = (
@@ -145,11 +134,12 @@ def rooted_graph_hashes(
 
 
 def _edge_triplet_hash_undirected(u, v, data, graph):
-    return _hash_unordered_triplet(
+    endpoint_label_hash = hash_set((
         _hash(graph.nodes[u]['label']),
-        _hash(data['label']),
         _hash(graph.nodes[v]['label']),
-    )
+    ))
+    edge_label_hash = _hash(data['label'])
+    return hash_sequence((endpoint_label_hash, edge_label_hash))
 
 
 def _edge_triplet_hash_directed(u, v, data, graph):
