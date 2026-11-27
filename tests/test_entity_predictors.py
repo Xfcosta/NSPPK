@@ -93,23 +93,27 @@ class EntityPredictorTests(unittest.TestCase):
             validation_data=([graph], labels[valid_indices]),
             validation_entity_indices=[valid_indices],
             search_space={"radius": [0, 1]},
-            n_samples=2,
-            n_initial_points=2,
+            n_lhs_trials=1,
+            n_additional_trials=1,
             random_state=3,
+            verbose=True,
         )
         self.assertTrue(result.validation_data_used)
+        self.assertEqual(len(result.x_iters), 2)
+        self.assertEqual(result.n_lhs_trials, 1)
+        self.assertEqual(result.n_additional_trials, 1)
         self.assertEqual(result.scoring, "average_precision")
         self.assertEqual(
-            model.predict([graph], entity_indices=[valid_indices]).shape,
+            model.predict([graph], entity_indices=[valid_indices], verbose=True).shape,
             valid_indices.shape,
         )
 
         edge_graphs = [_graph(5), _graph(6, cycle=True)]
         edge_selectors = [np.asarray([0]), np.asarray([0])]
         edge_model = EdgeNSPPKClassifier(nbits=4, parallel=False)
-        edge_model.fit(edge_graphs, [0, 1], entity_indices=edge_selectors)
+        edge_model.fit(edge_graphs, [0, 1], entity_indices=edge_selectors, verbose=True)
         self.assertEqual(
-            edge_model.predict(edge_graphs, entity_indices=edge_selectors).shape,
+            edge_model.predict(edge_graphs, entity_indices=edge_selectors, verbose=True).shape,
             (2,),
         )
 

@@ -148,6 +148,13 @@ configured SVD or clustering preprocessing. Those transformations are fitted
 once on the first batch and remain fixed for later updates.
 
 For Bayesian search over NSPPK settings, see the [tuning guide](TUNING.md).
+`.tune()` separates its budget into `n_lhs_trials` and
+`n_additional_trials`; the total is their sum. For example, values of 5 and 5
+run 10 trials. The returned optimizer result records both values and
+`n_total_trials`.
+The predictor wrappers' `fit`, `predict`, `predict_proba`, and `decision_function`
+methods accept `verbose=True` to show progress bars during feature transforms;
+`.tune(verbose=True)` shows a trial progress bar and a refit progress bar.
 
 ### Node- and edge-level prediction wrappers
 

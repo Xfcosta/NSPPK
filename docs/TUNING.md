@@ -37,14 +37,23 @@ result = model.tune(
     },
     scoring="average_precision",
     cv=5,
-    n_samples=40,
-    n_initial_points=20,
+    n_lhs_trials=20,
+    n_additional_trials=20,
     random_state=42,
+    verbose=True,
 )
 
 print(result.best_params, result.best_score)
+print(result.n_lhs_trials, result.n_additional_trials, result.n_total_trials)
 predictions = model.predict(test_graphs)
 ```
+
+`n_lhs_trials` is the number of initial Latin-hypercube trials, and
+`n_additional_trials` is the number of Bayesian-optimization trials that follow.
+They are additive: `n_lhs_trials=5, n_additional_trials=5` runs 10 trials in
+total. By default, each is 20. The older `n_samples` (total trials) and
+`n_initial_points` argument pair remains supported as a compatibility alias;
+do not combine the old and new arguments.
 
 With `validation_data`, each trial fits on `(X, y)` and scores on the supplied
 validation pair. The wrapper is refitted on `(X, y)` after the search; refit on
@@ -68,9 +77,12 @@ returned scikit-optimize `OptimizeResult` includes `best_params`, `best_score`,
 `cv_scores`, `fold_scores`, and the complete optimizer history. The wrapper
 also exposes `best_params_`, `best_score_`, and `tune_result_`.
 
-`trial_callback`, when supplied, receives a dictionary after each trial with
+`verbose=True` shows a progress bar for each tuning trial and the final model
+refit. The estimator's `fit`, `predict`, `predict_proba`, and `decision_function`
+methods accept the same flag and show progress while transforming the input
+graphs. `trial_callback`, when supplied, receives a dictionary after each trial with
 the parameters, fold scores, mean score, best-so-far values, and an
-`is_best` flag. `verbose=True` prints trial progress.
+`is_best` flag.
 
 Node and edge wrappers cross-validate encoded entity rows rather than graphs.
 For binary classification with labels `0` and `1`, the default score is average

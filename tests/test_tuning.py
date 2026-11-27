@@ -94,13 +94,21 @@ class NSPPKTuningTests(unittest.TestCase):
             validation_data=(validation_graphs, validation_labels),
             search_space={"radius": [0, 1]},
             scoring="accuracy",
-            n_samples=2,
-            n_initial_points=2,
+            n_lhs_trials=2,
+            n_additional_trials=1,
             random_state=11,
+            verbose=True,
         )
         self.assertTrue(result.validation_data_used)
         self.assertEqual(result.scoring, "accuracy")
-        self.assertEqual(model.predict(validation_graphs).shape, validation_labels.shape)
+        self.assertEqual(len(result.x_iters), 3)
+        self.assertEqual(result.n_lhs_trials, 2)
+        self.assertEqual(result.n_additional_trials, 1)
+        self.assertEqual(result.n_total_trials, 3)
+        self.assertEqual(
+            model.predict(validation_graphs, verbose=True).shape,
+            validation_labels.shape,
+        )
 
     def test_classifier_default_space_matches_documented_encoder_ranges(self):
         graphs, labels, _ = _graphs_and_targets()

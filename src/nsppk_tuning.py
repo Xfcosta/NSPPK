@@ -60,6 +60,65 @@ def _load_skopt():
     return gp_minimize, Integer, RealDimension, Categorical
 
 
+def _make_progress_bar(verbose, total, description):
+    if not verbose:
+        return None
+    from tqdm.auto import tqdm
+
+    return tqdm(total=total, desc=description)
+
+
+def _resolve_trial_counts(
+    n_lhs_trials,
+    n_additional_trials,
+    n_samples,
+    n_initial_points,
+    *,
+    default_lhs=20,
+    default_additional=20,
+):
+    """Resolve explicit LHS/additional counts and legacy total-count aliases."""
+    legacy_used = n_samples is not None or n_initial_points is not None
+    explicit_used = (
+        (n_lhs_trials is not None and n_lhs_trials != default_lhs)
+        or (n_additional_trials is not None and n_additional_trials != default_additional)
+    )
+    if legacy_used and explicit_used:
+        raise ValueError(
+            "Use n_lhs_trials/n_additional_trials or the legacy "
+            "n_samples/n_initial_points arguments, not both."
+        )
+
+    def validate(name, value, *, allow_zero=False):
+        minimum = 0 if allow_zero else 1
+        if (
+            isinstance(value, (bool, np.bool_))
+            or not isinstance(value, Integral)
+            or value < minimum
+        ):
+            qualifier = "non-negative" if allow_zero else "positive"
+            raise ValueError(f"{name} must be a {qualifier} integer.")
+        return int(value)
+
+    if legacy_used:
+        total = validate("n_samples", 40 if n_samples is None else n_samples)
+        requested_lhs = validate(
+            "n_initial_points", default_lhs if n_initial_points is None else n_initial_points
+        )
+        lhs = min(requested_lhs, total)
+        return lhs, total - lhs
+
+    lhs = validate(
+        "n_lhs_trials", default_lhs if n_lhs_trials is None else n_lhs_trials
+    )
+    additional = validate(
+        "n_additional_trials",
+        default_additional if n_additional_trials is None else n_additional_trials,
+        allow_zero=True,
+    )
+    return lhs, additional
+
+
 def _normalize_search_space(estimator, search_space):
     if search_space is None:
         search_space = _DEFAULT_SEARCH_SPACE
@@ -89,8 +148,10 @@ def tune_entity_predictor(
     search_space=None,
     scoring=None,
     cv=5,
-    n_samples=40,
-    n_initial_points=20,
+    n_lhs_trials=20,
+    n_additional_trials=20,
+    n_samples=None,
+    n_initial_points=None,
     random_state=0,
     trial_callback=None,
     verbose=False,
@@ -103,10 +164,10 @@ def tune_entity_predictor(
 
     if isinstance(cv, (bool, np.bool_)) or not isinstance(cv, Integral) or cv < 2:
         raise ValueError("cv must be an integer of at least 2.")
-    if isinstance(n_samples, (bool, np.bool_)) or not isinstance(n_samples, Integral) or n_samples < 1:
-        raise ValueError("n_samples must be a positive integer.")
-    if isinstance(n_initial_points, (bool, np.bool_)) or not isinstance(n_initial_points, Integral) or n_initial_points < 1:
-        raise ValueError("n_initial_points must be a positive integer.")
+    lhs_count, additional_count = _resolve_trial_counts(
+        n_lhs_trials, n_additional_trials, n_samples, n_initial_points
+    )
+    total_trials = lhs_count + additional_count
     if random_state is not None and (
         isinstance(random_state, (bool, np.bool_)) or not isinstance(random_state, Integral)
     ):
@@ -120,11 +181,19 @@ def tune_entity_predictor(
     if not graphs:
         raise ValueError("X must contain at least one graph.")
     train_selectors = estimator._normalize_entity_indices(graphs, entity_indices)
-    _, initial_features, entity_counts = estimator._fit_transform_graphs(
-        graphs, train_selectors
-    )
+    selected_rows = train_selectors if train_selectors is not None else [None] * len(graphs)
+    entity_counts = [
+        len(selector)
+        if train_selectors is not None
+        else int(
+            graph.number_of_nodes()
+            if estimator._entity_name == "node"
+            else graph.number_of_edges()
+        )
+        for graph, selector in zip(graphs, selected_rows)
+    ]
     targets, target_layout = estimator._normalize_targets(y, entity_counts)
-    if initial_features.shape[0] == 0:
+    if sum(entity_counts) == 0:
         raise ValueError(f"X contains no {estimator._entity_name} feature rows.")
     estimator._validate_targets(targets)
 
@@ -258,55 +327,61 @@ def tune_entity_predictor(
                     "is_best": is_best,
                 }
             )
-        if verbose:
-            print(
-                f"Trial {len(scores):02d}/{int(n_samples)}: {score_name}={score:.5f}; "
-                f"params={parameters}"
-            )
+        if progress is not None:
+            progress.update(1)
+            progress.set_postfix(score=f"{score:.4f}", best=f"{best_score_so_far:.4f}")
         return -score
 
-    initial_count = min(int(n_initial_points), int(n_samples))
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", category=ConvergenceWarning, module=r"sklearn\.gaussian_process"
-        )
-        for message in (
-            r"divide by zero encountered in matmul",
-            r"overflow encountered in matmul",
-            r"invalid value encountered in matmul",
-        ):
+    initial_count = lhs_count
+    progress = _make_progress_bar(verbose, total_trials, "Tuning entity NSPPK")
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", category=ConvergenceWarning, module=r"sklearn\.gaussian_process"
+            )
+            for message in (
+                r"divide by zero encountered in matmul",
+                r"overflow encountered in matmul",
+                r"invalid value encountered in matmul",
+            ):
+                warnings.filterwarnings(
+                    "ignore",
+                    message=message,
+                    category=RuntimeWarning,
+                    module=r"sklearn\.gaussian_process\._gpr",
+                )
             warnings.filterwarnings(
                 "ignore",
-                message=message,
-                category=RuntimeWarning,
-                module=r"sklearn\.gaussian_process\._gpr",
+                message=r"The objective has been evaluated at point .* before, using random point .*",
+                category=UserWarning,
+                module=r"skopt\.optimizer\.optimizer",
             )
-        warnings.filterwarnings(
-            "ignore",
-            message=r"The objective has been evaluated at point .* before, using random point .*",
-            category=UserWarning,
-            module=r"skopt\.optimizer\.optimizer",
-        )
-        result = gp_minimize(
-            objective,
-            dimensions,
-            n_calls=int(n_samples),
-            n_initial_points=initial_count,
-            initial_point_generator="lhs",
-            random_state=random_state,
-            verbose=bool(verbose),
-        )
+            result = gp_minimize(
+                objective,
+                dimensions,
+                n_calls=total_trials,
+                n_initial_points=initial_count,
+                initial_point_generator="lhs",
+                random_state=random_state,
+                verbose=False,
+            )
+    finally:
+        if progress is not None:
+            progress.close()
 
     best_index = int(np.argmin(result.func_vals))
     best_parameters = dict(zip(names, result.x))
     estimator.set_params(**best_parameters)
-    estimator.fit(graphs, y, entity_indices=train_selectors)
+    estimator.fit(graphs, y, entity_indices=train_selectors, verbose=verbose)
     result.task = estimator._task
     result.best_params = best_parameters
     result.best_score = float(scores[best_index])
     result.scoring = score_name if isinstance(score_name, str) else getattr(score_name, "__name__", "callable")
     result.cv = int(cv)
-    result.n_samples = int(n_samples)
+    result.n_samples = total_trials
+    result.n_total_trials = total_trials
+    result.n_lhs_trials = lhs_count
+    result.n_additional_trials = additional_count
     result.n_initial_points = initial_count
     result.search_space = search_space
     result.cv_scores = np.asarray(scores, dtype=float)
@@ -377,8 +452,10 @@ def tune_predictor(
     search_space=None,
     scoring=None,
     cv=5,
-    n_samples=40,
-    n_initial_points=20,
+    n_lhs_trials=20,
+    n_additional_trials=20,
+    n_samples=None,
+    n_initial_points=None,
     random_state=0,
     trial_callback: Callable[[dict], None] | None = None,
     verbose=False,
@@ -389,14 +466,10 @@ def tune_predictor(
 
     if isinstance(cv, (bool, np.bool_)) or not isinstance(cv, Integral) or cv < 2:
         raise ValueError("cv must be an integer of at least 2.")
-    if isinstance(n_samples, (bool, np.bool_)) or not isinstance(n_samples, Integral) or n_samples < 1:
-        raise ValueError("n_samples must be a positive integer.")
-    if (
-        isinstance(n_initial_points, (bool, np.bool_))
-        or not isinstance(n_initial_points, Integral)
-        or n_initial_points < 1
-    ):
-        raise ValueError("n_initial_points must be a positive integer.")
+    lhs_count, additional_count = _resolve_trial_counts(
+        n_lhs_trials, n_additional_trials, n_samples, n_initial_points
+    )
+    total_trials = lhs_count + additional_count
     if random_state is not None and (
         isinstance(random_state, (bool, np.bool_))
         or not isinstance(random_state, Integral)
@@ -549,62 +622,65 @@ def tune_predictor(
                     "is_best": is_best,
                 }
             )
-        if verbose:
-            print(
-                f"Trial {len(scores):02d}/{int(n_samples)}: {score_name}={score:.5f}; "
-                f"params={parameters}"
-            )
+        if progress is not None:
+            progress.update(1)
+            progress.set_postfix(score=f"{score:.4f}", best=f"{best_score_so_far:.4f}")
         return -score
 
-    initial_count = min(int(n_initial_points), int(n_samples))
-    with warnings.catch_warnings():
-        # skopt's GP surrogate can hit kernel bounds or produce non-finite
-        # intermediate matrix products while it proposes the next point.
-        # Those diagnostics are expected during BO and otherwise overwhelm
-        # the per-trial progress output; keep the filters local to this call.
-        warnings.filterwarnings(
-            "ignore",
-            category=ConvergenceWarning,
-            module=r"sklearn\.gaussian_process",
-        )
-        for message in (
-            r"divide by zero encountered in matmul",
-            r"overflow encountered in matmul",
-            r"invalid value encountered in matmul",
-        ):
+    initial_count = lhs_count
+    progress = _make_progress_bar(verbose, total_trials, "Tuning NSPPK")
+    try:
+        with warnings.catch_warnings():
+            # Keep warnings local to the BO surrogate fit.
             warnings.filterwarnings(
                 "ignore",
-                message=message,
-                category=RuntimeWarning,
-                module=r"sklearn\.gaussian_process\._gpr",
+                category=ConvergenceWarning,
+                module=r"sklearn\.gaussian_process",
             )
-        warnings.filterwarnings(
-            "ignore",
-            message=r"The objective has been evaluated at point .* before, using random point .*",
-            category=UserWarning,
-            module=r"skopt\.optimizer\.optimizer",
-        )
-        result = gp_minimize(
-            objective,
-            dimensions,
-            n_calls=int(n_samples),
-            n_initial_points=initial_count,
-            initial_point_generator="lhs",
-            random_state=random_state,
-            verbose=bool(verbose),
-        )
+            for message in (
+                r"divide by zero encountered in matmul",
+                r"overflow encountered in matmul",
+                r"invalid value encountered in matmul",
+            ):
+                warnings.filterwarnings(
+                    "ignore",
+                    message=message,
+                    category=RuntimeWarning,
+                    module=r"sklearn\.gaussian_process\._gpr",
+                )
+            warnings.filterwarnings(
+                "ignore",
+                message=r"The objective has been evaluated at point .* before, using random point .*",
+                category=UserWarning,
+                module=r"skopt\.optimizer\.optimizer",
+            )
+            result = gp_minimize(
+                objective,
+                dimensions,
+                n_calls=total_trials,
+                n_initial_points=initial_count,
+                initial_point_generator="lhs",
+                random_state=random_state,
+                verbose=False,
+            )
+    finally:
+        if progress is not None:
+            progress.close()
 
     best_index = int(np.argmin(result.func_vals))
     best_parameters = dict(zip(names, result.x))
     estimator.set_params(**best_parameters)
-    estimator.fit(graphs, y)
+    estimator.fit(graphs, y, verbose=verbose)
 
     result.task = estimator._task
     result.best_params = best_parameters
     result.best_score = float(scores[best_index])
     result.scoring = score_name if isinstance(score_name, str) else getattr(score_name, "__name__", "callable")
     result.cv = int(cv)
-    result.n_samples = int(n_samples)
+    result.n_samples = total_trials
+    result.n_total_trials = total_trials
+    result.n_lhs_trials = lhs_count
+    result.n_additional_trials = additional_count
     result.n_initial_points = initial_count
     result.search_space = search_space
     result.cv_scores = np.asarray(scores, dtype=float)
