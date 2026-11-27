@@ -29,6 +29,22 @@ Predictors
    :members:
    :show-inheritance:
 
+.. autoclass:: nsppk.NodeNSPPKClassifier
+   :members:
+   :show-inheritance:
+
+.. autoclass:: nsppk.NodeNSPPKRegressor
+   :members:
+   :show-inheritance:
+
+.. autoclass:: nsppk.EdgeNSPPKClassifier
+   :members:
+   :show-inheritance:
+
+.. autoclass:: nsppk.EdgeNSPPKRegressor
+   :members:
+   :show-inheritance:
+
 .. autoclass:: recursive_nsppk.RecursiveNSPPKClassifier
    :members:
    :show-inheritance:

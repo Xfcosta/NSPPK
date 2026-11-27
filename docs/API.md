@@ -149,6 +149,42 @@ once on the first batch and remain fixed for later updates.
 
 For Bayesian search over NSPPK settings, see the [tuning guide](TUNING.md).
 
+### Node- and edge-level prediction wrappers
+
+`NodeNSPPKClassifier`, `NodeNSPPKRegressor`, `EdgeNSPPKClassifier`, and
+`EdgeNSPPKRegressor` pair the node or edge transformer with a scikit-learn
+predictor. All four default to `estimator="rf"`; pass `estimator_params` to
+configure it or provide a compatible estimator instance. Node targets follow
+`NodeNSPPK.transform` row order (`graph.nodes()` order); edge targets label
+every row produced by `EdgeNSPPK.transform` in that transform's order.
+
+Targets may be one flat array concatenated in graph order or one one-dimensional
+array per graph. Predictions, `predict_proba`, and `decision_function` preserve
+the layout used for fitting. For example:
+
+```python
+from nsppk import NodeNSPPKClassifier, EdgeNSPPKRegressor
+
+node_model = NodeNSPPKClassifier(nbits=14, parallel=False)
+node_model.fit(graphs, [labels_for_graph_a, labels_for_graph_b])
+node_predictions = node_model.predict(test_graphs)  # one array per graph
+
+edge_model = EdgeNSPPKRegressor(estimator="rf", nbits=14, parallel=False)
+edge_model.fit(graphs, flat_edge_targets)
+edge_predictions = edge_model.predict(test_graphs)  # one flat array
+```
+
+These wrappers also provide `.tune()` over entity-level cross-validation folds.
+Its defaults are average precision for binary targets encoded as `0`/`1`,
+accuracy for multiclass classification, and R² for regression. Incremental
+estimators support `partial_fit`; `partial_fit_from` streams graphs with a
+`label_extractor` that returns one node- or edge-target array per graph.
+For official split workflows, pass `entity_indices` to fit/tune/predict only
+the desired rows, and pass `validation_data=(validation_graphs,
+y_validation)` plus `validation_entity_indices` to `.tune()` to score against
+an explicit validation split. This leaves the full graph topology available
+for transductive features without using validation labels during fitting.
+
 ### `RecursiveNSPPKClassifier`
 
 `RecursiveNSPPKClassifier` in `recursive_nsppk` applies `ImportanceNSPPK` stage by stage, restricts later outer roots to the selected nodes, concatenates all stage graph vectors, and fits a scikit-learn classifier.

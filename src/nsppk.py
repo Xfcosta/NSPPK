@@ -2832,6 +2832,7 @@ class _NSPPKPredictor(_SimplexFeatureOrderAliasMixin, BaseEstimator):
         random_state=0,
         trial_callback=None,
         verbose=False,
+        validation_data=None,
     ):
         """Tune NSPPK encoder parameters by Bayesian optimization.
 
@@ -2875,6 +2876,10 @@ class _NSPPKPredictor(_SimplexFeatureOrderAliasMixin, BaseEstimator):
             best-so-far information, and whether it is the best trial.
         verbose : bool, default=False
             Whether to print trial progress.
+        validation_data : pair of (graphs, targets), optional
+            When provided, fit each trial on ``(X, y)`` and score it on this
+            explicit validation pair instead of cross-validation. After the
+            search, refit the wrapper on ``(X, y)`` only.
 
         Returns
         -------
@@ -2897,6 +2902,7 @@ class _NSPPKPredictor(_SimplexFeatureOrderAliasMixin, BaseEstimator):
             random_state=random_state,
             trial_callback=trial_callback,
             verbose=verbose,
+            validation_data=validation_data,
         )
 
     def _partial_fit_batch(self, X, y, classes=None, **fit_params):
@@ -3475,3 +3481,528 @@ class EdgeNSPPK(_SimplexFeatureOrderAliasMixin, BaseEstimator, TransformerMixin)
         if base.dense:
             edge_matrices = [matrix.toarray() for matrix in edge_matrices]
         return edge_matrices
+
+
+class _EntityNSPPKPredictor(BaseEstimator):
+    """Shared supervised interface for node- and edge-level NSPPK features."""
+
+    _entity_level = True
+    _task = None
+
+    def _make_estimator(self):
+        return _NSPPKPredictor._make_estimator(self)
+
+    def _supports_partial_fit(self):
+        return _NSPPKPredictor._supports_partial_fit(self)
+
+    def _make_encoder(self):
+        raise NotImplementedError
+
+    def _features_per_graph(self, encoder, graphs, selectors=None):
+        matrices = encoder.transform(graphs)
+        if selectors is None:
+            return matrices
+        return [matrix[selector] for matrix, selector in zip(matrices, selectors)]
+
+    def _normalize_entity_indices(self, graphs, entity_indices):
+        if entity_indices is None:
+            return None
+        if len(graphs) == 1 and isinstance(entity_indices, np.ndarray) and entity_indices.ndim == 1:
+            selectors = [entity_indices]
+        elif len(graphs) == 1 and isinstance(entity_indices, (list, tuple)) and (
+            not entity_indices or np.asarray(entity_indices).ndim == 1
+        ):
+            selectors = [entity_indices]
+        else:
+            try:
+                selectors = list(entity_indices)
+            except TypeError as exc:
+                raise TypeError("entity_indices must provide one selector per graph.") from exc
+        if len(selectors) != len(graphs):
+            raise ValueError("entity_indices must contain exactly one selector per graph.")
+
+        normalized = []
+        for graph_index, (graph, selector) in enumerate(zip(graphs, selectors)):
+            values = np.asarray(selector)
+            if values.ndim != 1 or values.dtype.kind not in "iu":
+                raise ValueError(
+                    f"entity_indices[{graph_index}] must be a one-dimensional integer array."
+                )
+            count = int(
+                graph.number_of_nodes()
+                if self._entity_name == "node"
+                else graph.number_of_edges()
+            )
+            values = values.astype(np.int64, copy=False)
+            if np.any(values < 0) or np.any(values >= count):
+                raise ValueError(
+                    f"entity_indices[{graph_index}] contains an index outside [0, {count})."
+                )
+            if np.unique(values).size != values.size:
+                raise ValueError(f"entity_indices[{graph_index}] cannot contain duplicates.")
+            normalized.append(values)
+        return normalized
+
+    @staticmethod
+    def _stack_entity_features(matrices):
+        if not matrices:
+            raise ValueError("X must contain at least one graph.")
+        if any(sp.sparse.issparse(matrix) for matrix in matrices):
+            sparse_matrices = [
+                matrix.tocsr() if sp.sparse.issparse(matrix) else csr_matrix(matrix)
+                for matrix in matrices
+            ]
+            return sp.sparse.vstack(sparse_matrices, format="csr")
+        return np.concatenate([np.asarray(matrix) for matrix in matrices], axis=0)
+
+    def _fit_transform_graphs(self, graphs, entity_indices=None):
+        encoder = self._make_encoder()
+        encoder.fit(graphs)
+        selectors = self._normalize_entity_indices(graphs, entity_indices)
+        matrices = self._features_per_graph(encoder, graphs, selectors)
+        counts = [int(matrix.shape[0]) for matrix in matrices]
+        return encoder, self._stack_entity_features(matrices), counts
+
+    @staticmethod
+    def _normalize_targets(y, counts):
+        if y is None:
+            raise ValueError("y is required.")
+        nested = False
+        if isinstance(y, (list, tuple)) and len(y) == len(counts):
+            candidate = [np.asarray(target) for target in y]
+            nested = bool(candidate) and all(target.ndim == 1 for target in candidate) and any(
+                target.ndim > 0 for target in candidate
+            )
+        elif isinstance(y, np.ndarray) and y.ndim == 2 and len(y) == len(counts):
+            nested = all(y.shape[1] == count for count in counts)
+
+        if nested:
+            targets_by_graph = [np.asarray(target) for target in y]
+            for graph_index, (target, count) in enumerate(zip(targets_by_graph, counts)):
+                if target.ndim != 1:
+                    raise ValueError(
+                        f"Targets for graph {graph_index} must be one-dimensional."
+                    )
+                if len(target) != count:
+                    raise ValueError(
+                        f"Graph {graph_index} has {count} entities "
+                        f"but received {len(target)} targets."
+                    )
+            flat_targets = (
+                np.concatenate(targets_by_graph)
+                if targets_by_graph
+                else np.asarray([], dtype=float)
+            )
+            return flat_targets, "per_graph"
+
+        flat_targets = np.asarray(y)
+        if flat_targets.ndim != 1:
+            raise ValueError("Flat y must be a one-dimensional target array.")
+        expected = int(sum(counts))
+        if len(flat_targets) != expected:
+            raise ValueError(
+                f"Received {len(flat_targets)} targets for {expected} encoded entities."
+            )
+        return flat_targets, "flat"
+
+    def _validate_targets(self, targets, *, require_multiple_classes=True):
+        if self._task == "classifier":
+            from sklearn.utils.multiclass import check_classification_targets
+
+            check_classification_targets(targets)
+            if require_multiple_classes and np.unique(targets).size < 2:
+                raise ValueError("Classification requires at least two target classes.")
+        else:
+            if targets.dtype.kind not in "iuf" or not np.isfinite(targets).all():
+                raise ValueError("Regression targets must be finite numeric values.")
+
+    def _check_layout(self, layout):
+        if hasattr(self, "target_layout_") and self.target_layout_ != layout:
+            raise ValueError(
+                "partial_fit target layout must match the layout used by the first batch."
+            )
+
+    def fit(self, X, y, *, entity_indices=None, **fit_params):
+        """Fit on node or edge rows flattened in graph order."""
+        graphs = list(X)
+        if not graphs:
+            raise ValueError("X must contain at least one graph.")
+        encoder, features, counts = self._fit_transform_graphs(graphs, entity_indices)
+        targets, layout = self._normalize_targets(y, counts)
+        if features.shape[0] == 0:
+            raise ValueError(f"X contains no {self._entity_name} feature rows.")
+        self._validate_targets(targets)
+        model = self._make_estimator()
+        model.fit(features, targets, **fit_params)
+        self.encoder_ = encoder
+        self.estimator_ = model
+        self.target_layout_ = layout
+        self.n_features_in_ = features.shape[1]
+        if self._task == "classifier":
+            self.classes_ = model.classes_
+        return self
+
+    def _transform_fitted(self, X, entity_indices=None):
+        check_is_fitted(self, attributes=["encoder_", "estimator_"])
+        graphs = list(X)
+        if not graphs:
+            raise ValueError("X must contain at least one graph.")
+        selectors = self._normalize_entity_indices(graphs, entity_indices)
+        matrices = self._features_per_graph(self.encoder_, graphs, selectors)
+        counts = [int(matrix.shape[0]) for matrix in matrices]
+        return self._stack_entity_features(matrices), counts
+
+    def _format_predictions(self, values, counts):
+        if getattr(self, "target_layout_", "flat") == "flat":
+            return values
+        boundaries = np.cumsum(counts)[:-1]
+        return list(np.split(values, boundaries, axis=0))
+
+    def predict(self, X, *, entity_indices=None):
+        features, counts = self._transform_fitted(X, entity_indices)
+        if features.shape[0] == 0:
+            values = np.asarray([], dtype=getattr(self, "classes_", np.asarray([])).dtype)
+        else:
+            values = self.estimator_.predict(features)
+        return self._format_predictions(values, counts)
+
+    @available_if(lambda self: hasattr(getattr(self, "estimator_", None), "predict_proba"))
+    def predict_proba(self, X, *, entity_indices=None):
+        features, counts = self._transform_fitted(X, entity_indices)
+        values = (
+            self.estimator_.predict_proba(features)
+            if features.shape[0]
+            else np.empty((0, len(self.classes_)), dtype=float)
+        )
+        return self._format_predictions(values, counts)
+
+    @available_if(lambda self: hasattr(getattr(self, "estimator_", None), "decision_function"))
+    def decision_function(self, X, *, entity_indices=None):
+        features, counts = self._transform_fitted(X, entity_indices)
+        values = (
+            self.estimator_.decision_function(features)
+            if features.shape[0]
+            else np.empty((0,), dtype=float)
+        )
+        return self._format_predictions(values, counts)
+
+    def score(self, X, y, *, entity_indices=None):
+        from sklearn.metrics import accuracy_score, r2_score
+
+        features, counts = self._transform_fitted(X, entity_indices)
+        targets, _ = self._normalize_targets(y, counts)
+        predictions = self.estimator_.predict(features)
+        if self._task == "classifier":
+            return accuracy_score(targets, predictions)
+        return r2_score(targets, predictions)
+
+    def tune(
+        self,
+        X,
+        y,
+        *,
+        search_space=None,
+        scoring=None,
+        cv=5,
+        n_samples=40,
+        n_initial_points=20,
+        random_state=0,
+        trial_callback=None,
+        verbose=False,
+        entity_indices=None,
+        validation_data=None,
+        validation_entity_indices=None,
+    ):
+        """Tune encoder settings by entity-row CV or explicit validation data."""
+        from nsppk_tuning import tune_entity_predictor
+
+        return tune_entity_predictor(
+            self,
+            X,
+            y,
+            search_space=search_space,
+            scoring=scoring,
+            cv=cv,
+            n_samples=n_samples,
+            n_initial_points=n_initial_points,
+            random_state=random_state,
+            trial_callback=trial_callback,
+            verbose=verbose,
+            entity_indices=entity_indices,
+            validation_data=validation_data,
+            validation_entity_indices=validation_entity_indices,
+        )
+
+    def _partial_fit_batch(self, X, y, classes=None, **fit_params):
+        graphs = list(X)
+        if not graphs:
+            raise ValueError("X must contain at least one graph.")
+        first_update = not hasattr(self, "estimator_")
+        if first_update:
+            encoder = self._make_encoder()
+            encoder.fit(graphs)
+        else:
+            encoder = self.encoder_
+        matrices = self._features_per_graph(encoder, graphs)
+        counts = [int(matrix.shape[0]) for matrix in matrices]
+        features = self._stack_entity_features(matrices)
+        targets, layout = self._normalize_targets(y, counts)
+        self._check_layout(layout)
+        if features.shape[0] == 0:
+            raise ValueError(f"X contains no {self._entity_name} feature rows.")
+        self._validate_targets(targets, require_multiple_classes=False)
+        if self._task == "regressor" and classes is not None:
+            raise ValueError("classes is only supported by classifiers.")
+
+        model = self._make_estimator() if first_update else self.estimator_
+        if not callable(getattr(model, "partial_fit", None)):
+            raise TypeError(
+                f"{type(model).__name__} does not implement partial_fit(); "
+                "choose an incremental estimator."
+            )
+        if self._task == "classifier":
+            if first_update and classes is None:
+                raise ValueError("classes is required on the first classifier partial_fit call.")
+            if classes is not None:
+                classes = np.asarray(classes)
+                if classes.ndim != 1 or classes.size == 0 or np.unique(classes).size != classes.size:
+                    raise ValueError("classes must be a non-empty one-dimensional array of unique labels.")
+                model.partial_fit(features, targets, classes=classes, **fit_params)
+            else:
+                model.partial_fit(features, targets, **fit_params)
+        else:
+            model.partial_fit(features, targets, **fit_params)
+
+        if first_update:
+            self.encoder_ = encoder
+            self.estimator_ = model
+            self.target_layout_ = layout
+            self.n_features_in_ = features.shape[1]
+        if self._task == "classifier" and hasattr(model, "classes_"):
+            self.classes_ = model.classes_
+        return features, targets
+
+    @available_if(lambda self: self._supports_partial_fit())
+    def partial_fit(self, X, y, classes=None, **fit_params):
+        """Incrementally fit a batch of graphs and their entity targets."""
+        self._partial_fit_batch(X, y, classes=classes, **fit_params)
+        return self
+
+    @available_if(lambda self: self._supports_partial_fit())
+    def partial_fit_from(
+        self,
+        uri,
+        type,
+        reader=None,
+        limit=None,
+        random_state=None,
+        batch_size=128,
+        verbose=False,
+        label_extractor=None,
+        start_after_instance=0,
+        classes=None,
+        batch_callback=None,
+        **fit_params,
+    ):
+        """Stream graph batches; ``label_extractor`` returns targets per entity."""
+        if label_extractor is None or not callable(label_extractor):
+            raise ValueError("label_extractor must return one target array per graph.")
+        if batch_callback is not None and not callable(batch_callback):
+            raise ValueError("batch_callback must be callable when provided.")
+        if isinstance(batch_size, (bool, np.bool_)) or not isinstance(batch_size, Integral) or batch_size < 1:
+            raise ValueError("batch_size must be a positive integer.")
+
+        _sync_graph_io_hooks()
+        graph_iterable = _graph_io._iter_loaded_graphs(
+            uri,
+            type,
+            reader=reader,
+            limit=limit,
+            random_state=random_state,
+            verbose=verbose,
+            mode="stream",
+            start_after_instance=start_after_instance,
+        )
+        n_entities_seen = 0
+        first_batch = True
+        for graphs in _graph_io._batched_graphs(graph_iterable, int(batch_size)):
+            targets = [label_extractor(graph) for graph in graphs]
+            features, flat_targets = self._partial_fit_batch(
+                graphs,
+                targets,
+                classes=classes if first_batch else None,
+                **fit_params,
+            )
+            n_entities_seen += len(flat_targets)
+            if batch_callback is not None:
+                batch_callback(self, features, flat_targets, n_entities_seen)
+            first_batch = False
+        if first_batch:
+            raise ValueError("The graph source produced no training batches.")
+        return self
+
+
+class _NodeNSPPKPredictor(_EntityNSPPKPredictor):
+    _entity_name = "node"
+
+    def __init__(
+        self,
+        estimator="rf",
+        estimator_params=None,
+        radius=1,
+        distance=3,
+        connector=0,
+        nbits=10,
+        degree_threshold=None,
+        dense=False,
+        parallel=True,
+        weight_key=None,
+        node_attribute_key=None,
+        attribute_dim=None,
+        attribute_alphabet_size=None,
+        sigma=None,
+        use_simplex_features=False,
+        simplex_feature_order=2,
+        parameters=None,
+    ):
+        self.estimator = estimator
+        self.estimator_params = estimator_params
+        self.radius = radius
+        self.distance = distance
+        self.connector = connector
+        self.nbits = nbits
+        self.degree_threshold = degree_threshold
+        self.dense = dense
+        self.parallel = parallel
+        self.weight_key = weight_key
+        self.node_attribute_key = node_attribute_key
+        self.attribute_dim = attribute_dim
+        self.attribute_alphabet_size = attribute_alphabet_size
+        self.sigma = sigma
+        self.use_simplex_features = use_simplex_features
+        self.simplex_feature_order = _resolve_simplex_feature_order(simplex_feature_order, None)
+        self.parameters = parameters
+
+    def _make_encoder(self):
+        return NodeNSPPK(
+            radius=self.radius,
+            distance=self.distance,
+            connector=self.connector,
+            nbits=self.nbits,
+            degree_threshold=self.degree_threshold,
+            dense=self.dense,
+            parallel=self.parallel,
+            weight_key=self.weight_key,
+            node_attribute_key=self.node_attribute_key,
+            attribute_dim=self.attribute_dim,
+            attribute_alphabet_size=self.attribute_alphabet_size,
+            sigma=self.sigma,
+            use_simplex_features=self.use_simplex_features,
+            simplex_feature_order=self.simplex_feature_order,
+            parameters=self.parameters,
+        )
+
+    def _features_per_graph(self, encoder, graphs, selectors=None):
+        if selectors is None:
+            return encoder.transform(graphs)
+        graph_node_ids = [list(graph.nodes()) for graph in graphs]
+        root_node_ids = [
+            [graph_node_ids[index][int(row)] for row in selector]
+            for index, selector in enumerate(selectors)
+        ]
+        matrices = encoder.transform(graphs, root_node_ids=root_node_ids)
+        return [matrix[selector] for matrix, selector in zip(matrices, selectors)]
+
+
+class _EdgeNSPPKPredictor(_EntityNSPPKPredictor):
+    _entity_name = "edge"
+
+    def __init__(
+        self,
+        estimator="rf",
+        estimator_params=None,
+        radius=1,
+        distance=3,
+        connector=0,
+        nbits=10,
+        degree_threshold=None,
+        dense=False,
+        parallel=True,
+        edge_attribute_key=None,
+        edge_attribute_dim=None,
+        edge_attribute_alphabet_size=None,
+        sigma=None,
+        use_simplex_features=False,
+        simplex_feature_order=2,
+        parameters=None,
+    ):
+        self.estimator = estimator
+        self.estimator_params = estimator_params
+        self.radius = radius
+        self.distance = distance
+        self.connector = connector
+        self.nbits = nbits
+        self.degree_threshold = degree_threshold
+        self.dense = dense
+        self.parallel = parallel
+        self.edge_attribute_key = edge_attribute_key
+        self.edge_attribute_dim = edge_attribute_dim
+        self.edge_attribute_alphabet_size = edge_attribute_alphabet_size
+        self.sigma = sigma
+        self.use_simplex_features = use_simplex_features
+        self.simplex_feature_order = _resolve_simplex_feature_order(simplex_feature_order, None)
+        self.parameters = parameters
+
+    def _make_encoder(self):
+        return EdgeNSPPK(
+            radius=self.radius,
+            distance=self.distance,
+            connector=self.connector,
+            nbits=self.nbits,
+            degree_threshold=self.degree_threshold,
+            dense=self.dense,
+            parallel=self.parallel,
+            edge_attribute_key=self.edge_attribute_key,
+            edge_attribute_dim=self.edge_attribute_dim,
+            edge_attribute_alphabet_size=self.edge_attribute_alphabet_size,
+            sigma=self.sigma,
+            use_simplex_features=self.use_simplex_features,
+            simplex_feature_order=self.simplex_feature_order,
+            parameters=self.parameters,
+        )
+
+
+class NodeNSPPKClassifier(ClassifierMixin, _NodeNSPPKPredictor):
+    """Classify node rows encoded by :class:`NodeNSPPK`."""
+
+    _task = "classifier"
+
+    def score(self, X, y, *, entity_indices=None):
+        return _EntityNSPPKPredictor.score(self, X, y, entity_indices=entity_indices)
+
+
+class NodeNSPPKRegressor(RegressorMixin, _NodeNSPPKPredictor):
+    """Regress node targets from :class:`NodeNSPPK` feature rows."""
+
+    _task = "regressor"
+
+    def score(self, X, y, *, entity_indices=None):
+        return _EntityNSPPKPredictor.score(self, X, y, entity_indices=entity_indices)
+
+
+class EdgeNSPPKClassifier(ClassifierMixin, _EdgeNSPPKPredictor):
+    """Classify edge rows encoded by :class:`EdgeNSPPK`."""
+
+    _task = "classifier"
+
+    def score(self, X, y, *, entity_indices=None):
+        return _EntityNSPPKPredictor.score(self, X, y, entity_indices=entity_indices)
+
+
+class EdgeNSPPKRegressor(RegressorMixin, _EdgeNSPPKPredictor):
+    """Regress edge targets from :class:`EdgeNSPPK` feature rows."""
+
+    _task = "regressor"
+
+    def score(self, X, y, *, entity_indices=None):
+        return _EntityNSPPKPredictor.score(self, X, y, entity_indices=entity_indices)

@@ -78,6 +78,30 @@ class NSPPKTuningTests(unittest.TestCase):
         self.assertEqual(model.best_params_, result.best_params)
         self.assertEqual(model.predict(graphs[:2]).shape, (2,))
 
+    def test_classifier_tune_accepts_an_explicit_validation_set(self):
+        graphs, labels, _ = _graphs_and_targets()
+        train_graphs, validation_graphs = graphs[:8], graphs[8:]
+        train_labels, validation_labels = labels[:8], labels[8:]
+        model = NSPPKClassifier(
+            estimator=LogisticRegression(solver="liblinear", max_iter=100),
+            nbits=5,
+            dense=False,
+            parallel=False,
+        )
+        result = model.tune(
+            train_graphs,
+            train_labels,
+            validation_data=(validation_graphs, validation_labels),
+            search_space={"radius": [0, 1]},
+            scoring="accuracy",
+            n_samples=2,
+            n_initial_points=2,
+            random_state=11,
+        )
+        self.assertTrue(result.validation_data_used)
+        self.assertEqual(result.scoring, "accuracy")
+        self.assertEqual(model.predict(validation_graphs).shape, validation_labels.shape)
+
     def test_classifier_default_space_matches_documented_encoder_ranges(self):
         graphs, labels, _ = _graphs_and_targets()
         model = NSPPKClassifier(

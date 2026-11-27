@@ -81,6 +81,244 @@ def _normalize_search_space(estimator, search_space):
     return normalized
 
 
+def tune_entity_predictor(
+    estimator,
+    X,
+    y,
+    *,
+    search_space=None,
+    scoring=None,
+    cv=5,
+    n_samples=40,
+    n_initial_points=20,
+    random_state=0,
+    trial_callback=None,
+    verbose=False,
+    entity_indices=None,
+    validation_data=None,
+    validation_entity_indices=None,
+):
+    """Tune a node/edge wrapper by CV or an explicit validation set."""
+    gp_minimize, Integer, RealDimension, Categorical = _load_skopt()
+
+    if isinstance(cv, (bool, np.bool_)) or not isinstance(cv, Integral) or cv < 2:
+        raise ValueError("cv must be an integer of at least 2.")
+    if isinstance(n_samples, (bool, np.bool_)) or not isinstance(n_samples, Integral) or n_samples < 1:
+        raise ValueError("n_samples must be a positive integer.")
+    if isinstance(n_initial_points, (bool, np.bool_)) or not isinstance(n_initial_points, Integral) or n_initial_points < 1:
+        raise ValueError("n_initial_points must be a positive integer.")
+    if random_state is not None and (
+        isinstance(random_state, (bool, np.bool_)) or not isinstance(random_state, Integral)
+    ):
+        raise ValueError("random_state must be an integer or None.")
+    if not isinstance(verbose, (bool, np.bool_)):
+        raise ValueError("verbose must be a boolean.")
+    if trial_callback is not None and not callable(trial_callback):
+        raise ValueError("trial_callback must be callable or None.")
+
+    graphs = list(X)
+    if not graphs:
+        raise ValueError("X must contain at least one graph.")
+    train_selectors = estimator._normalize_entity_indices(graphs, entity_indices)
+    _, initial_features, entity_counts = estimator._fit_transform_graphs(
+        graphs, train_selectors
+    )
+    targets, target_layout = estimator._normalize_targets(y, entity_counts)
+    if initial_features.shape[0] == 0:
+        raise ValueError(f"X contains no {estimator._entity_name} feature rows.")
+    estimator._validate_targets(targets)
+
+    validation_graphs = validation_targets = validation_selectors = None
+    validation_counts = None
+    if validation_data is not None:
+        if not isinstance(validation_data, (tuple, list)) or len(validation_data) != 2:
+            raise ValueError("validation_data must be a (graphs, targets) pair.")
+        validation_graphs = list(validation_data[0])
+        if not validation_graphs:
+            raise ValueError("validation_data must contain at least one graph.")
+        validation_selectors = estimator._normalize_entity_indices(
+            validation_graphs, validation_entity_indices
+        )
+        if validation_selectors is None:
+            validation_counts = [
+                graph.number_of_nodes()
+                if estimator._entity_name == "node"
+                else graph.number_of_edges()
+                for graph in validation_graphs
+            ]
+        else:
+            validation_counts = [len(selector) for selector in validation_selectors]
+        validation_targets, _ = estimator._normalize_targets(
+            validation_data[1], validation_counts
+        )
+        if not len(validation_targets):
+            raise ValueError("validation_data contains no selected entities.")
+        estimator._validate_targets(validation_targets)
+
+    is_classifier = estimator._task == "classifier"
+    if is_classifier:
+        classes, counts = np.unique(targets, return_counts=True)
+        if len(classes) < 2:
+            raise ValueError("Classification tuning requires at least two classes.")
+        if validation_data is None and counts.min() < cv:
+            raise ValueError(
+                f"Stratified {cv}-fold tuning requires at least {cv} examples in every class."
+            )
+        cv_splitter = (
+            StratifiedKFold(n_splits=int(cv), shuffle=True, random_state=random_state)
+            if validation_data is None
+            else None
+        )
+        if validation_data is not None and np.unique(validation_targets).size < 2:
+            raise ValueError("Validation classification targets must contain at least two classes.")
+        if scoring is None:
+            score_name = (
+                "average_precision"
+                if len(classes) == 2 and np.array_equal(classes, np.asarray([0, 1]))
+                else "accuracy"
+            )
+        else:
+            score_name = scoring
+    else:
+        if targets.dtype.kind not in "iuf" or not np.isfinite(targets).all():
+            raise ValueError("Regression tuning requires finite numeric targets.")
+        if validation_data is None and len(targets) < cv:
+            raise ValueError(f"KFold tuning requires at least {cv} entities.")
+        cv_splitter = (
+            KFold(n_splits=int(cv), shuffle=True, random_state=random_state)
+            if validation_data is None
+            else None
+        )
+        if validation_data is not None and (
+            validation_targets.dtype.kind not in "iuf"
+            or not np.isfinite(validation_targets).all()
+        ):
+            raise ValueError("Validation regression targets must be finite numeric values.")
+        score_name = "r2" if scoring is None else scoring
+
+    if not isinstance(score_name, str) and not callable(score_name):
+        raise ValueError("scoring must be a scikit-learn scorer name or scorer callable.")
+    scorer = get_scorer(score_name) if isinstance(score_name, str) else score_name
+    search_space = _normalize_search_space(estimator, search_space)
+    names, dimensions = _dimensions(
+        estimator, search_space, Integer, RealDimension, Categorical
+    )
+    folds = (
+        list(cv_splitter.split(np.zeros(len(targets)), targets))
+        if validation_data is None
+        else None
+    )
+    scores = []
+    fold_scores_by_trial = []
+    best_score_so_far = -np.inf
+    best_params_so_far = None
+
+    def objective(values):
+        nonlocal best_score_so_far, best_params_so_far
+        parameters = dict(zip(names, values))
+        candidate = clone(estimator).set_params(**parameters)
+        encoder, features, counts = candidate._fit_transform_graphs(
+            graphs, train_selectors
+        )
+        if counts != entity_counts:
+            raise RuntimeError("Encoder settings changed the number of entity feature rows.")
+        fold_scores = []
+        if validation_data is not None:
+            valid_matrices = candidate._features_per_graph(
+                encoder, validation_graphs, validation_selectors
+            )
+            valid_features = candidate._stack_entity_features(valid_matrices)
+            model = candidate._make_estimator()
+            model.fit(features, targets)
+            fold_scores.append(float(scorer(model, valid_features, validation_targets)))
+        else:
+            for train_indices, valid_indices in folds:
+                model = candidate._make_estimator()
+                model.fit(features[train_indices], targets[train_indices])
+                fold_scores.append(
+                    float(scorer(model, features[valid_indices], targets[valid_indices]))
+                )
+        score = float(np.mean(fold_scores))
+        scores.append(score)
+        fold_scores_by_trial.append(fold_scores)
+        is_best = score > best_score_so_far
+        if is_best:
+            best_score_so_far = score
+            best_params_so_far = parameters.copy()
+        if trial_callback is not None:
+            trial_callback(
+                {
+                    "trial": len(scores),
+                    "parameters": parameters.copy(),
+                    "fold_scores": list(fold_scores),
+                    "score": score,
+                    "scoring": score_name if isinstance(score_name, str) else getattr(score_name, "__name__", "callable"),
+                    "best_score": float(best_score_so_far),
+                    "best_params": best_params_so_far.copy(),
+                    "is_best": is_best,
+                }
+            )
+        if verbose:
+            print(
+                f"Trial {len(scores):02d}/{int(n_samples)}: {score_name}={score:.5f}; "
+                f"params={parameters}"
+            )
+        return -score
+
+    initial_count = min(int(n_initial_points), int(n_samples))
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", category=ConvergenceWarning, module=r"sklearn\.gaussian_process"
+        )
+        for message in (
+            r"divide by zero encountered in matmul",
+            r"overflow encountered in matmul",
+            r"invalid value encountered in matmul",
+        ):
+            warnings.filterwarnings(
+                "ignore",
+                message=message,
+                category=RuntimeWarning,
+                module=r"sklearn\.gaussian_process\._gpr",
+            )
+        warnings.filterwarnings(
+            "ignore",
+            message=r"The objective has been evaluated at point .* before, using random point .*",
+            category=UserWarning,
+            module=r"skopt\.optimizer\.optimizer",
+        )
+        result = gp_minimize(
+            objective,
+            dimensions,
+            n_calls=int(n_samples),
+            n_initial_points=initial_count,
+            initial_point_generator="lhs",
+            random_state=random_state,
+            verbose=bool(verbose),
+        )
+
+    best_index = int(np.argmin(result.func_vals))
+    best_parameters = dict(zip(names, result.x))
+    estimator.set_params(**best_parameters)
+    estimator.fit(graphs, y, entity_indices=train_selectors)
+    result.task = estimator._task
+    result.best_params = best_parameters
+    result.best_score = float(scores[best_index])
+    result.scoring = score_name if isinstance(score_name, str) else getattr(score_name, "__name__", "callable")
+    result.cv = int(cv)
+    result.n_samples = int(n_samples)
+    result.n_initial_points = initial_count
+    result.search_space = search_space
+    result.cv_scores = np.asarray(scores, dtype=float)
+    result.fold_scores = np.asarray(fold_scores_by_trial, dtype=float)
+    result.target_layout = target_layout
+    result.validation_data_used = validation_data is not None
+    estimator.best_params_ = best_parameters.copy()
+    estimator.best_score_ = result.best_score
+    estimator.tune_result_ = result
+    return result
+
+
 def _dimensions(estimator, search_space, Integer, RealDimension, Categorical):
     names = list(search_space)
     constructor_parameters = signature(type(estimator).__init__).parameters
@@ -144,6 +382,7 @@ def tune_predictor(
     random_state=0,
     trial_callback: Callable[[dict], None] | None = None,
     verbose=False,
+    validation_data=None,
 ):
     """Tune only NSPPK encoder settings, then refit the winning wrapper."""
     gp_minimize, Integer, RealDimension, Categorical = _load_skopt()
@@ -178,25 +417,50 @@ def tune_predictor(
         raise ValueError("y must be a one-dimensional target array.")
     check_consistent_length(graphs, y)
 
+    validation_graphs = validation_targets = None
+    if validation_data is not None:
+        if not isinstance(validation_data, (tuple, list)) or len(validation_data) != 2:
+            raise ValueError("validation_data must be a (graphs, targets) pair.")
+        validation_graphs = list(validation_data[0])
+        validation_targets = np.asarray(validation_data[1])
+        if not validation_graphs:
+            raise ValueError("validation_data must contain at least one graph.")
+        if validation_targets.ndim != 1:
+            raise ValueError("Validation targets must be a one-dimensional array.")
+        check_consistent_length(validation_graphs, validation_targets)
+
     is_classifier = estimator._task == "classifier"
     if is_classifier:
         classes, counts = np.unique(y, return_counts=True)
         if len(classes) < 2:
             raise ValueError("Classification tuning requires at least two classes.")
-        if counts.min() < cv:
+        if validation_data is None and counts.min() < cv:
             raise ValueError(
                 f"Stratified {cv}-fold tuning requires at least {cv} examples in every class."
             )
-        cv_splitter = StratifiedKFold(
-            n_splits=int(cv), shuffle=True, random_state=random_state
+        cv_splitter = (
+            StratifiedKFold(n_splits=int(cv), shuffle=True, random_state=random_state)
+            if validation_data is None
+            else None
         )
+        if validation_data is not None and np.unique(validation_targets).size < 2:
+            raise ValueError("Validation classification targets must contain at least two classes.")
         score_name = "average_precision" if scoring is None else scoring
     else:
         if y.dtype.kind not in "iuf" or not np.isfinite(y).all():
             raise ValueError("Regression tuning requires finite numeric targets.")
-        if len(y) < cv:
+        if validation_data is None and len(y) < cv:
             raise ValueError(f"KFold tuning requires at least {cv} examples.")
-        cv_splitter = KFold(n_splits=int(cv), shuffle=True, random_state=random_state)
+        cv_splitter = (
+            KFold(n_splits=int(cv), shuffle=True, random_state=random_state)
+            if validation_data is None
+            else None
+        )
+        if validation_data is not None and (
+            validation_targets.dtype.kind not in "iuf"
+            or not np.isfinite(validation_targets).all()
+        ):
+            raise ValueError("Validation regression targets must be finite numeric values.")
         score_name = "r2" if scoring is None else scoring
 
     if not isinstance(score_name, str) and not callable(score_name):
@@ -206,7 +470,11 @@ def tune_predictor(
     names, dimensions = _dimensions(
         estimator, search_space, Integer, RealDimension, Categorical
     )
-    folds = list(cv_splitter.split(np.zeros(len(y)), y))
+    folds = (
+        list(cv_splitter.split(np.zeros(len(y)), y))
+        if validation_data is None
+        else None
+    )
     scores = []
     fold_scores_by_trial = []
     best_score_so_far = -np.inf
@@ -234,7 +502,13 @@ def tune_predictor(
         parameters = dict(zip(names, values))
         fold_scores = []
 
-        if not learned_preprocessing:
+        if validation_data is not None:
+            candidate = clone(estimator).set_params(**parameters)
+            candidate.fit(graphs, y)
+            fold_scores.append(
+                float(scorer(candidate, validation_graphs, validation_targets))
+            )
+        elif not learned_preprocessing:
             candidate = clone(estimator).set_params(**parameters)
             encoder = candidate._make_encoder()
             encoder.fit(graphs)
@@ -335,6 +609,7 @@ def tune_predictor(
     result.search_space = search_space
     result.cv_scores = np.asarray(scores, dtype=float)
     result.fold_scores = np.asarray(fold_scores_by_trial, dtype=float)
+    result.validation_data_used = validation_data is not None
     estimator.best_params_ = best_parameters.copy()
     estimator.best_score_ = result.best_score
     estimator.tune_result_ = result
