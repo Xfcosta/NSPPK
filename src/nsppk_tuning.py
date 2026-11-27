@@ -10,6 +10,7 @@ from typing import Callable
 
 import numpy as np
 from sklearn.base import clone
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics import get_scorer
 from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.utils.validation import check_consistent_length
@@ -283,13 +284,32 @@ def tune_predictor(
 
     initial_count = min(int(n_initial_points), int(n_samples))
     with warnings.catch_warnings():
-        if not verbose:
+        # skopt's GP surrogate can hit kernel bounds or produce non-finite
+        # intermediate matrix products while it proposes the next point.
+        # Those diagnostics are expected during BO and otherwise overwhelm
+        # the per-trial progress output; keep the filters local to this call.
+        warnings.filterwarnings(
+            "ignore",
+            category=ConvergenceWarning,
+            module=r"sklearn\.gaussian_process",
+        )
+        for message in (
+            r"divide by zero encountered in matmul",
+            r"overflow encountered in matmul",
+            r"invalid value encountered in matmul",
+        ):
             warnings.filterwarnings(
                 "ignore",
-                message=r"The objective has been evaluated at point .* before, using random point .*",
-                category=UserWarning,
-                module=r"skopt\.optimizer\.optimizer",
+                message=message,
+                category=RuntimeWarning,
+                module=r"sklearn\.gaussian_process\._gpr",
             )
+        warnings.filterwarnings(
+            "ignore",
+            message=r"The objective has been evaluated at point .* before, using random point .*",
+            category=UserWarning,
+            module=r"skopt\.optimizer\.optimizer",
+        )
         result = gp_minimize(
             objective,
             dimensions,

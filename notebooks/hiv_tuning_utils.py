@@ -117,7 +117,7 @@ def plot_heldout_report(
     fpr, tpr, _ = roc_curve(y_true, probabilities)
     precision, recall, _ = precision_recall_curve(y_true, probabilities)
 
-    fig = plt.figure(figsize=(18, 10), constrained_layout=True)
+    fig = plt.figure(figsize=(18, 10))
     gs = fig.add_gridspec(2, 4, height_ratios=[0.85, 1.4])
     ax_metrics = fig.add_subplot(gs[0, :])
     metric_names = ["Accuracy", "Balanced accuracy", "Macro F1", "ROC AUC", "Average precision"]
@@ -169,6 +169,7 @@ def plot_heldout_report(
     ax_roc.plot(fpr, tpr, label=f"ROC AUC = {metrics['roc_auc']:.3f}", color="#2563eb")
     ax_roc.plot([0, 1], [0, 1], ":", color="black", label="Random baseline")
     ax_roc.set(title="ROC", xlabel="False positive rate", ylabel="True positive rate", xlim=(0, 1), ylim=(0, 1.02))
+    ax_roc.set_box_aspect(1)
     ax_roc.grid(alpha=0.25)
     ax_roc.legend(frameon=False, loc="lower right")
 
@@ -176,10 +177,24 @@ def plot_heldout_report(
     ax_pr.plot(recall, precision, label=f"Average precision = {metrics['average_precision']:.3f}", color="#2563eb")
     ax_pr.axhline(y_true.mean(), linestyle=":", color="black", label=f"Random baseline = {y_true.mean():.3f}")
     ax_pr.set(title="Precision–recall", xlabel="Recall", ylabel="Precision", xlim=(0, 1), ylim=(0, 1.02))
+    ax_pr.set_box_aspect(1)
     ax_pr.grid(alpha=0.25)
     ax_pr.legend(frameon=False, loc="upper right")
 
-    fig.suptitle("HIV: held-out test model performance", fontsize=16)
-    subtitle = f"{classifier_label} | NSPPK {best_params} | nbits={nbits}"
-    fig.text(0.5, 0.955, subtitle, ha="center", fontsize=10)
+    display_params = {
+        key: value.item() if isinstance(value, np.generic) else value
+        for key, value in best_params.items()
+    }
+    parameter_label = ", ".join(
+        f"{key}={value}" for key, value in display_params.items()
+    )
+    fig.suptitle("HIV: held-out test model performance", y=0.985, fontsize=16)
+    fig.text(
+        0.5,
+        0.94,
+        f"{classifier_label} | NSPPK: {parameter_label} | nbits={nbits}",
+        ha="center",
+        fontsize=10,
+    )
+    fig.subplots_adjust(top=0.88, bottom=0.08, left=0.06, right=0.96, hspace=0.38, wspace=0.68)
     return metrics, cm, fig

@@ -45,4 +45,4 @@ tuning = [
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["nsppk", "nsppk_tuning", "importance_nsppk", "recursive_nsppk", "hash", "graph_io", "utils"]
+py-modules = ["nsppk", "nsppk_tuning", "nsppk_leaderboard", "importance_nsppk", "recursive_nsppk", "hash", "graph_io", "utils"]

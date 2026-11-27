@@ -1,0 +1,2 @@
+train_examples,test_examples,train_active,test_active,test_active_prevalence,budget_per_class_requested,budget_per_class_effective,radius,distance,connector,use_simplex_features,simplex_feature_order,nbits,accuracy,balanced_accuracy,macro_f1,roc_auc,average_precision,precision_at_0.5,recall_at_0.5,feature_seconds,classifier_fit_seconds
+30840,10280,1082,361,0.03511673151750973,2000,1082,1,2,0,True,2,14,0.9724708171206226,0.6841073359028071,0.7370504410255687,0.8598663020884677,0.5007950062157649,0.703125,0.3739612188365651,36.7113435419742,4.6345750000327826
