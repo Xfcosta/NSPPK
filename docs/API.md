@@ -100,6 +100,8 @@ regression it selects `Ridge`. The classifier shortcut disables regularization
 and the intercept to minimize fit time, so predictive performance may be lower.
 Pass `estimator="rf"` to select `RandomForestClassifier` or
 `RandomForestRegressor`; both forest shortcuts set `random_state=0` by default.
+For incremental regression, use `estimator="sgd"` to select an
+`SGDRegressor`; the existing Ridge `"linear"` default is unchanged.
 Use `estimator_params` to override shortcut parameters, or pass a scikit-learn
 estimator instance directly:
 
@@ -111,6 +113,39 @@ classifier = NSPPKClassifier(
     nbits=14,
 )
 ```
+
+When the selected estimator implements scikit-learn's `partial_fit`, both
+wrappers expose `partial_fit(graphs, y, classes=None)`. Classifiers require the
+complete `classes` list on the first update. The first graph batch fits any
+learned attribute preprocessing and is also used to train the predictor;
+subsequent batches keep that preprocessing fixed. The wrappers also provide
+`partial_fit_from(uri, type, ..., label_extractor=..., batch_size=...)` to
+stream labeled graph batches from supported sources. These methods are only
+available for estimators that implement `partial_fit`; for example, the
+default classifier and the regression `"sgd"` option support it, while Ridge
+and random-forest shortcuts do not.
+`partial_fit_from` also accepts `batch_callback`; after each update it calls
+`batch_callback(estimator, X_batch, y_batch, n_samples_seen)`, which is useful
+for checkpoint metrics and progress reporting.
+
+```python
+classifier = NSPPKClassifier(estimator="linear", nbits=14, parallel=False)
+classifier.partial_fit(first_graph_batch, first_targets, classes=[0, 1])
+classifier.partial_fit(next_graph_batch, next_targets)
+
+classifier = NSPPKClassifier(estimator="linear", nbits=14, parallel=False)
+classifier.partial_fit_from(
+    "molecules.csv",
+    "smiles",
+    label_extractor=lambda graph: int(graph.graph["active"]),
+    batch_size=128,
+    classes=[0, 1],
+)
+```
+
+The first batch must contain enough node/edge attribute vectors for any
+configured SVD or clustering preprocessing. Those transformations are fitted
+once on the first batch and remain fixed for later updates.
 
 ### `RecursiveNSPPKClassifier`
 

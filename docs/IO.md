@@ -117,4 +117,11 @@ for X_batch, y_batch in encoder.stream_from(
     print(X_batch.shape, y_batch.shape)
 ```
 
+For end-to-end incremental prediction, `NSPPKClassifier` and
+`NSPPKRegressor` provide `partial_fit_from(...)` when their selected estimator
+supports `partial_fit`. This streams raw graph batches, fits any learned
+attribute preprocessing on the first batch, and updates the predictor with
+that batch and all later batches. See the [predictor API](API.md#nsppkclassifier-and-nsppkregressor)
+for classifier class handling and examples.
+
 For exact feature shapes and dense/sparse behavior, see [API.md](API.md).

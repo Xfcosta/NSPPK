@@ -120,6 +120,21 @@ fast fitting. This speed-first default may trade away predictive performance.
 You can also pass a custom scikit-learn classifier. See the [API reference](API.md)
 for classifier and regressor options.
 
+For incremental learning, the default classifier uses an estimator that
+supports `partial_fit`. Supply the complete class list on the first batch;
+the first batch also initializes any learned attribute preprocessing:
+
+```python
+classifier = NSPPKClassifier(estimator="linear", nbits=8, parallel=False)
+classifier.partial_fit(first_graphs, first_targets, classes=[0, 1])
+classifier.partial_fit(next_graphs, next_targets)
+```
+
+To stream directly from a supported graph source, use
+`classifier.partial_fit_from(..., label_extractor=..., classes=...)`. The
+regressor can use `estimator="sgd"` for incremental updates; its default
+`estimator="linear"` remains Ridge and does not support `partial_fit`.
+
 ## Where to go next
 
 - [API and representation reference](API.md): parameters, graph requirements,

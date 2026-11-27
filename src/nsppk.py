@@ -22,7 +22,7 @@ from sklearn.base import (
 from sklearn.cluster import KMeans
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier, RandomForestRegressor
 from sklearn.decomposition import TruncatedSVD
-from sklearn.linear_model import Ridge, SGDClassifier
+from sklearn.linear_model import Ridge, SGDClassifier, SGDRegressor
 from sklearn.model_selection import train_test_split
 import multiprocessing_on_dill as mp
 
@@ -47,7 +47,7 @@ from hash import (
 )
 from graph_io import ensure_graph_labels
 
-__version__ = "3.3.0"
+__version__ = "3.4.0"
 
 _make_rng = _graph_io._make_rng
 _require_rdkit = _graph_io._require_rdkit
@@ -2725,9 +2725,12 @@ class _NSPPKPredictor(_SimplexFeatureOrderAliasMixin, BaseEstimator):
                     if self._task == "classifier"
                     else RandomForestRegressor(random_state=0)
                 )
+            elif shortcut == "sgd" and self._task == "regressor":
+                model = SGDRegressor(random_state=0)
             else:
                 raise ValueError(
-                    "estimator must be 'linear', 'rf', or a scikit-learn estimator; "
+                    "estimator must be 'linear', 'rf', 'sgd' for regression, or a "
+                    "scikit-learn estimator; "
                     f"got {estimator!r}."
                 )
         elif isinstance(estimator, type):
@@ -2763,16 +2766,17 @@ class _NSPPKPredictor(_SimplexFeatureOrderAliasMixin, BaseEstimator):
             raise TypeError(f"estimator must be a scikit-learn {expected}.")
         return model
 
-    def fit(self, X, y, **fit_params):
-        """Fit the NSPPK encoder and the selected predictor on graph inputs."""
-        graphs = list(X)
-        if not graphs:
-            raise ValueError("X must contain at least one graph.")
-        if y is None:
-            raise ValueError("y is required.")
-        check_consistent_length(graphs, y)
+    def _supports_partial_fit(self):
+        """Whether the configured predictor has a scikit-learn partial_fit method."""
+        try:
+            model = self._make_estimator()
+        except (TypeError, ValueError):
+            return False
+        return callable(getattr(model, "partial_fit", None))
 
-        encoder = NSPPK(
+    def _make_encoder(self):
+        """Create a fresh NSPPK encoder with this predictor's configuration."""
+        return NSPPK(
             radius=self.radius,
             distance=self.distance,
             connector=self.connector,
@@ -2793,6 +2797,17 @@ class _NSPPKPredictor(_SimplexFeatureOrderAliasMixin, BaseEstimator):
             simplex_feature_order=self.simplex_feature_order,
             parameters=self.parameters,
         )
+
+    def fit(self, X, y, **fit_params):
+        """Fit the NSPPK encoder and the selected predictor on graph inputs."""
+        graphs = list(X)
+        if not graphs:
+            raise ValueError("X must contain at least one graph.")
+        if y is None:
+            raise ValueError("y is required.")
+        check_consistent_length(graphs, y)
+
+        encoder = self._make_encoder()
         encoder.fit(graphs, y)
         features = encoder.transform(graphs)
         model = self._make_estimator()
@@ -2802,6 +2817,124 @@ class _NSPPKPredictor(_SimplexFeatureOrderAliasMixin, BaseEstimator):
         self.estimator_ = model
         if self._task == "classifier" and hasattr(model, "classes_"):
             self.classes_ = model.classes_
+        return self
+
+    def _partial_fit_batch(self, X, y, classes=None, **fit_params):
+        if not self._supports_partial_fit():
+            model = self._make_estimator()
+            raise TypeError(
+                f"{type(model).__name__} does not implement partial_fit(); "
+                "choose an incremental estimator."
+            )
+
+        graphs = list(X)
+        if not graphs:
+            raise ValueError("X must contain at least one graph.")
+        if y is None:
+            raise ValueError("y is required.")
+        check_consistent_length(graphs, y)
+
+        if self._task == "regressor" and classes is not None:
+            raise ValueError("classes is only supported by NSPPKClassifier.")
+
+        first_update = not hasattr(self, "estimator_")
+        if self._task == "classifier" and first_update and classes is None:
+            raise ValueError("classes must be provided on the first classifier partial_fit call.")
+        if self._task == "classifier" and classes is not None:
+            classes = np.asarray(classes)
+            if classes.ndim != 1 or classes.size == 0 or np.unique(classes).size != classes.size:
+                raise ValueError("classes must be a non-empty one-dimensional array of unique labels.")
+
+        if first_update:
+            encoder = self._make_encoder()
+            # Keep a single feature mapping across every update. In particular,
+            # attribute projections and clusters must not be refit per batch.
+            encoder.fit(graphs, y)
+            features = encoder.transform(graphs)
+            model = self._make_estimator()
+        else:
+            encoder = self.encoder_
+            model = self.estimator_
+            features = encoder.transform(graphs)
+
+        if self._task == "classifier" and classes is not None:
+            model.partial_fit(features, y, classes=classes, **fit_params)
+        else:
+            model.partial_fit(features, y, **fit_params)
+
+        if first_update:
+            self.encoder_ = encoder
+            self.estimator_ = model
+        if self._task == "classifier" and hasattr(model, "classes_"):
+            self.classes_ = model.classes_
+        return features
+
+    @available_if(lambda self: self._supports_partial_fit())
+    def partial_fit(self, X, y, classes=None, **fit_params):
+        """Incrementally train the predictor on one batch of input graphs.
+
+        On the first call, the NSPPK encoder is fitted on this batch so any
+        learned attribute preprocessing is established. The same batch is then
+        transformed and used to update the predictor. Later calls reuse the
+        fitted encoder and predictor. For classification, ``classes`` is
+        required on the first call and may be omitted afterward.
+        """
+        self._partial_fit_batch(X, y, classes=classes, **fit_params)
+        return self
+
+    @available_if(lambda self: self._supports_partial_fit())
+    def partial_fit_from(
+        self,
+        uri,
+        type,
+        reader=None,
+        limit=None,
+        random_state=None,
+        batch_size=128,
+        verbose=False,
+        label_extractor=None,
+        start_after_instance=0,
+        classes=None,
+        batch_callback=None,
+        **fit_params,
+    ):
+        """Incrementally train from a graph source using NSPPK's built-in readers.
+
+        The first batch initializes learned encoder preprocessing and is also
+        used to train the predictor. Classifiers require ``classes`` to include
+        the complete label set. If supplied, ``batch_callback`` is called after
+        each update as ``batch_callback(self, X_batch, y_batch, n_samples_seen)``.
+        """
+        if batch_callback is not None and not callable(batch_callback):
+            raise TypeError("batch_callback must be callable when provided.")
+        _sync_graph_io_hooks()
+        extractor = _graph_io._normalize_label_extractor(label_extractor)
+        graph_iterable = _graph_io._iter_loaded_graphs(
+            uri,
+            type,
+            reader=reader,
+            limit=limit,
+            random_state=random_state,
+            verbose=verbose,
+            mode="stream",
+            start_after_instance=start_after_instance,
+        )
+        first_batch = True
+        n_samples_seen = 0
+        for graphs in _graph_io._batched_graphs(graph_iterable, batch_size):
+            targets = np.asarray([extractor(graph) for graph in graphs])
+            features = self._partial_fit_batch(
+                graphs,
+                targets,
+                classes=classes if first_batch else None,
+                **fit_params,
+            )
+            n_samples_seen += len(targets)
+            if batch_callback is not None:
+                batch_callback(self, features, targets, n_samples_seen)
+            first_batch = False
+        if first_batch:
+            raise ValueError("The graph source produced no training batches.")
         return self
 
     def predict(self, X):
@@ -2838,7 +2971,9 @@ class NSPPKRegressor(RegressorMixin, _NSPPKPredictor):
     """Regress graph targets using NSPPK features and a scikit-learn estimator.
 
     ``estimator`` may be ``"linear"`` (Ridge), ``"rf"``
-    (RandomForestRegressor), or a scikit-learn regressor instance. Pass
+    (RandomForestRegressor), ``"sgd"`` (SGDRegressor), or a scikit-learn
+    regressor instance. Ridge and random forests do not support
+    ``partial_fit``; SGDRegressor and compatible custom estimators do. Pass
     estimator constructor overrides with ``estimator_params``.
     """
 

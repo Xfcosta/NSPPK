@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.4.0] - 2026-11-27
+
+- Added incremental `partial_fit` and source-streaming `partial_fit_from` methods to the graph-level classifier and regressor wrappers when their estimator supports incremental updates.
+- Fit learned attribute preprocessing once on the first training batch and keep it fixed across subsequent updates; added batch callbacks for streaming metrics and progress hooks.
+- Added the `SGDRegressor` shortcut for incremental regression while preserving Ridge as the `linear` default.
+- Updated the molecular learning-curve notebook to train through `NSPPKClassifier.partial_fit_from` and compare incremental updates with regular estimator fitting.
+- Expanded the predictor, streaming, and getting-started documentation for incremental training.
+
 ## [3.3.0] - 2026-11-26
 
 - Added `parameters` lists to graph, node, and edge encoders so one output can accumulate features from multiple radius, distance, connector, weighting, and simplex configurations.
