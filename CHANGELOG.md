@@ -1,5 +1,11 @@
 # Changelog
 
+## [3.5.0] - 2026-11-27
+
+- Added Bayesian optimization for graph-level classifier and regressor wrappers to tune NSPPK encoder parameters with cross-validation, callbacks, and trial history.
+- Added the optional `tuning` dependency extra, API and tuning guides, and tests for classifier and regressor searches.
+- Added a runnable HIV Bayesian optimization notebook and refreshed the molecular learning-curve experiment to compare batch and incremental training workflows.
+
 ## [3.4.0] - 2026-11-27
 
 - Added incremental `partial_fit` and source-streaming `partial_fit_from` methods to the graph-level classifier and regressor wrappers when their estimator supports incremental updates.

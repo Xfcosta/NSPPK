@@ -147,6 +147,8 @@ The first batch must contain enough node/edge attribute vectors for any
 configured SVD or clustering preprocessing. Those transformations are fitted
 once on the first batch and remain fixed for later updates.
 
+For Bayesian search over NSPPK settings, see the [tuning guide](TUNING.md).
+
 ### `RecursiveNSPPKClassifier`
 
 `RecursiveNSPPKClassifier` in `recursive_nsppk` applies `ImportanceNSPPK` stage by stage, restricts later outer roots to the selected nodes, concatenates all stage graph vectors, and fits a scikit-learn classifier.

@@ -47,7 +47,7 @@ from hash import (
 )
 from graph_io import ensure_graph_labels
 
-__version__ = "3.4.0"
+__version__ = "3.5.0"
 
 _make_rng = _graph_io._make_rng
 _require_rdkit = _graph_io._require_rdkit
@@ -2818,6 +2818,86 @@ class _NSPPKPredictor(_SimplexFeatureOrderAliasMixin, BaseEstimator):
         if self._task == "classifier" and hasattr(model, "classes_"):
             self.classes_ = model.classes_
         return self
+
+    def tune(
+        self,
+        X,
+        y,
+        *,
+        search_space=None,
+        scoring=None,
+        cv=5,
+        n_samples=40,
+        n_initial_points=20,
+        random_state=0,
+        trial_callback=None,
+        verbose=False,
+    ):
+        """Tune NSPPK encoder parameters by Bayesian optimization.
+
+        Numeric two-tuples in ``search_space`` are inclusive bounds; lists
+        specify explicit choices. The configured scikit-learn estimator stays
+        fixed during the search. The selected configuration is fitted on all
+        supplied graphs and targets, and the search result is returned.
+
+        If ``search_space`` is omitted, the search varies ``radius`` over
+        ``(0, 2)``, ``distance`` over ``(0, 4)``, ``connector`` over ``(0, 2)``,
+        and ``use_simplex_features`` over ``[False, True]``. Classification
+        defaults to average precision; regression defaults to R².
+
+        Bayesian tuning requires the optional ``scikit-optimize`` dependency:
+        install it with ``python -m pip install 'nsppk[tuning]'``.
+
+        Parameters
+        ----------
+        X : iterable of graph-like objects
+            Input NetworkX graphs.
+        y : array-like
+            One class label or numeric regression target per graph.
+        search_space : mapping, optional
+            NSPPK encoder parameter names mapped to numeric ``(low, high)``
+            bounds or non-empty lists of explicit choices. Classifier and
+            regressor settings cannot be searched.
+        scoring : str or callable, optional
+            Scikit-learn scorer name or scorer callable. Defaults to
+            ``"average_precision"`` for classification and ``"r2"`` for
+            regression.
+        cv : int, default=5
+            Number of stratified classification or shuffled regression folds.
+        n_samples : int, default=40
+            Number of parameter configurations to evaluate.
+        n_initial_points : int, default=20
+            Maximum number of Latin-hypercube initial trials.
+        random_state : int or None, default=0
+            Seed for the sampler and cross-validation folds.
+        trial_callback : callable, optional
+            Called after each trial with its parameters, fold scores, score,
+            best-so-far information, and whether it is the best trial.
+        verbose : bool, default=False
+            Whether to print trial progress.
+
+        Returns
+        -------
+        skopt.OptimizeResult
+            Search history and best configuration. The wrapper is refitted
+            using that configuration and exposes ``best_params_``,
+            ``best_score_``, and ``tune_result_``.
+        """
+        from nsppk_tuning import tune_predictor
+
+        return tune_predictor(
+            self,
+            X,
+            y,
+            search_space=search_space,
+            scoring=scoring,
+            cv=cv,
+            n_samples=n_samples,
+            n_initial_points=n_initial_points,
+            random_state=random_state,
+            trial_callback=trial_callback,
+            verbose=verbose,
+        )
 
     def _partial_fit_batch(self, X, y, classes=None, **fit_params):
         if not self._supports_partial_fit():

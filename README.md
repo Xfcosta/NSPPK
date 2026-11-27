@@ -61,6 +61,7 @@ With `nbits=8` and no continuous node attributes, this example produces 256 stru
 - **Node features:** `NodeNSPPK` returns one node-by-feature matrix per graph. Rows follow each graph’s `graph.nodes()` iteration order.
 - **Edge features:** `EdgeNSPPK` returns one edge-by-feature matrix per graph. Rows follow NetworkX edge iteration order; multigraph rows retain each keyed edge, and directed rows include the ordered arc pattern.
 - **Prediction:** `NSPPKClassifier` and `NSPPKRegressor` wrap graph vectorization with a scikit-learn estimator, with `partial_fit` and source streaming when the selected estimator supports incremental updates.
+- **Tuning:** `NSPPKClassifier.tune()` and `NSPPKRegressor.tune()` search encoder settings with optional Bayesian optimization support. Install it with `python -m pip install 'nsppk[tuning]'`; see the [tuning guide](docs/TUNING.md).
 
 See the [getting-started guide](docs/GETTING_STARTED.md) for runnable examples of node features and prediction, and the [API reference](docs/API.md) for parameters and output details.
 
@@ -77,6 +78,7 @@ See [graph loading and streaming](docs/IO.md) for supported formats and examples
 
 - [Getting started](docs/GETTING_STARTED.md)
 - [API and output reference](docs/API.md)
+- [Bayesian hyperparameter tuning](docs/TUNING.md)
 - [Graph loading and streaming](docs/IO.md)
 - [Node attributes](docs/ATTRIBUTES_INTEGRATION.md)
 - [Hashing procedure](docs/HASH.md)
